@@ -62,6 +62,11 @@ export function renderResults(s: AppState, errors: Array<{ side: 'R' | 'L'; key:
     if (p.stem.manual && (Math.abs(pose.tilt) >= 0.5 || Math.abs(pose.shift) >= 0.5)) {
       out.push(row('Stem alignment', `${Math.abs(pose.tilt).toFixed(1)}° ${pose.tilt >= 0 ? 'varus' : 'valgus'}, ${Math.abs(pose.shift).toFixed(1)} mm ${pose.shift >= 0 ? 'medial' : 'lateral'}`));
     }
+    if (p.cup) {
+      const names = { anatomic: 'ilioischial line + sourcil', teardrop: 'teardrop referenced', native: 'native centre', manual: 'manual' };
+      out.push(row('Cup placement', names[p.cup.placement]));
+      out.push(row('Cup inferomedial rim', `${Math.abs(p.cup.rimAboveTeardrop).toFixed(1)} mm ${p.cup.rimAboveTeardrop >= 0 ? 'above' : 'below'} teardrop line`));
+    }
     if (p.cup?.lateralUncoverage !== undefined) {
       const u = p.cup.lateralUncoverage;
       out.push(row('Lateral cup uncoverage', u > 0 ? `<span class="${u > 8 ? 'delta-warn' : ''}">${u.toFixed(1)} mm</span>` : 'covered'));

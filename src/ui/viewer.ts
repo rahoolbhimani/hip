@@ -9,7 +9,7 @@ import { drawOverlay, type Layers, type LabelLayer } from './overlay';
 import { drawSummary, drawLegend } from './summary';
 import { C as COLORS } from './overlay';
 import { isOnImageLeft } from '../planning/measure';
-import type { Side, StemPose } from '../planning/types';
+import type { PointKey, Side, StemPose } from '../planning/types';
 import { fromFrame, toFrame, scale } from '../geometry/vec';
 import { stemOutlineLocal, stemToFemur } from '../planning/plan';
 
@@ -202,7 +202,7 @@ export class Viewer {
     const recompute = () => this.store.recompute();
     for (const side of ['R', 'L'] as Side[]) {
       const l = s.case.landmarks[side];
-      const pointHandle = (key: 'teardrop' | 'lesserTrochanter' | 'greaterTrochanter' | 'acetabularEdge') => {
+      const pointHandle = (key: PointKey) => {
         const p = l[key];
         if (p) hs.push({ pos: p, move: (q) => { l[key] = q; recompute(); } });
       };
@@ -210,6 +210,8 @@ export class Viewer {
       pointHandle('lesserTrochanter');
       pointHandle('greaterTrochanter');
       pointHandle('acetabularEdge');
+      pointHandle('ilioischial');
+      pointHandle('sourcil');
       if (l.head) {
         const head = l.head;
         hs.push({ pos: head.center, move: (q) => { head.center = q; recompute(); } });
@@ -546,6 +548,10 @@ export function reviewTarget(s: AppState, item: ReviewItem): { center: Vec2; fie
       return l.lesserTrochanter ? { center: l.lesserTrochanter, fieldMm: 100 } : null;
     case 'acetabularEdge':
       return l.acetabularEdge ? { center: l.acetabularEdge, fieldMm: 90 } : null;
+    case 'ilioischial':
+      return l.ilioischial ? { center: l.ilioischial, fieldMm: 90 } : null;
+    case 'sourcil':
+      return l.sourcil ? { center: l.sourcil, fieldMm: 90 } : null;
     case 'greaterTrochanter':
       return l.greaterTrochanter ? { center: l.greaterTrochanter, fieldMm: 100 } : null;
   }

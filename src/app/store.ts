@@ -1,7 +1,7 @@
 import type { Vec2 } from '../geometry/vec';
 import type { LoadedImage } from '../imaging/load';
 import { detectCanal, detectFemoralHead } from '../imaging/detect';
-import { type CaseData, type LandmarkKey, type Side, type SideLandmarks, type StemPose, emptyCase } from '../planning/types';
+import { type CaseData, type LandmarkKey, type PointKey, type Side, type SideLandmarks, type StemPose, emptyCase } from '../planning/types';
 import { type PlanResult, buildPlan } from '../planning/plan';
 import { type ImplantLibrary, DEFAULT_LIBRARY } from '../planning/implants';
 import { measure, type Measurements } from '../planning/measure';
@@ -37,7 +37,19 @@ const KEY_FOR_STEP: Record<StepKind, LandmarkKey> = {
   lt: 'lesserTrochanter',
   canal: 'canal',
   acetEdge: 'acetabularEdge',
+  ilio: 'ilioischial',
+  sourcil: 'sourcil',
   gt: 'greaterTrochanter',
+};
+
+/** Single-point landmarks by step kind. */
+const POINT_FOR_STEP: Partial<Record<StepKind, PointKey>> = {
+  teardrop: 'teardrop',
+  lt: 'lesserTrochanter',
+  gt: 'greaterTrochanter',
+  acetEdge: 'acetabularEdge',
+  ilio: 'ilioischial',
+  sourcil: 'sourcil',
 };
 
 type Listener = (s: AppState) => void;
@@ -157,6 +169,12 @@ export class Store {
       if (a.teardrop) put(side, 'teardrop', () => (l.teardrop = a.teardrop), a.teardrop);
       if (a.head) put(side, 'head', () => (l.head = a.head), a.head.center);
       if (a.lesserTrochanter) put(side, 'lesserTrochanter', () => (l.lesserTrochanter = a.lesserTrochanter), a.lesserTrochanter);
+      if (side === op) {
+        // Acetabular references for the cup (operative side only).
+        if (a.ilioischial) put(side, 'ilioischial', () => (l.ilioischial = a.ilioischial), a.ilioischial);
+        if (a.sourcil) put(side, 'sourcil', () => (l.sourcil = a.sourcil), a.sourcil);
+        if (a.acetabularEdge) put(side, 'acetabularEdge', () => (l.acetabularEdge = a.acetabularEdge), a.acetabularEdge);
+      }
       if (a.canalSeeds) {
         const seeds = a.canalSeeds;
         put(side, 'canal', () => {
@@ -166,7 +184,9 @@ export class Store {
       }
     }
     const order: Array<[Side, LandmarkKey]> = [
-      [op, 'teardrop'], [ct, 'teardrop'], [op, 'head'], [op, 'lesserTrochanter'], [op, 'canal'],
+      [op, 'teardrop'], [ct, 'teardrop'], [op, 'head'],
+      [op, 'ilioischial'], [op, 'sourcil'], [op, 'acetabularEdge'],
+      [op, 'lesserTrochanter'], [op, 'canal'],
       [ct, 'head'], [ct, 'lesserTrochanter'], [ct, 'canal'],
     ];
     for (const [side, key] of order) if (this.statusOf(side, key) === 'proposed') items.push({ kind: 'landmark', side, key });
@@ -325,45 +345,20 @@ export class Store {
 
   isStepDone(s: Step, op: Side = this.state.case.operativeSide): boolean {
     const l = this.landmarks(stepSide(s, op));
-    switch (s.kind) {
-      case 'teardrop':
-        return !!l.teardrop;
-      case 'head':
-        return !!l.head;
-      case 'lt':
-        return !!l.lesserTrochanter;
-      case 'canal':
-        return !!l.canal;
-      case 'acetEdge':
-        return !!l.acetabularEdge;
-      case 'gt':
-        return !!l.greaterTrochanter;
-    }
+    const pk = POINT_FOR_STEP[s.kind];
+    if (pk) return !!l[pk];
+    return s.kind === 'head' ? !!l.head : !!l.canal;
   }
 
   clearStep(s: Step): void {
     const l = this.landmarks(stepSide(s, this.state.case.operativeSide));
     if (l.status) delete l.status[KEY_FOR_STEP[s.kind]];
-    switch (s.kind) {
-      case 'teardrop':
-        delete l.teardrop;
-        break;
-      case 'head':
-        delete l.head;
-        break;
-      case 'lt':
-        delete l.lesserTrochanter;
-        break;
-      case 'canal':
-        delete l.canal;
-        delete l.canalSeeds;
-        break;
-      case 'acetEdge':
-        delete l.acetabularEdge;
-        break;
-      case 'gt':
-        delete l.greaterTrochanter;
-        break;
+    const pk = POINT_FOR_STEP[s.kind];
+    if (pk) delete l[pk];
+    else if (s.kind === 'head') delete l.head;
+    else {
+      delete l.canal;
+      delete l.canalSeeds;
     }
     this.recompute();
   }
@@ -397,26 +392,12 @@ export class Store {
     const side = stepSide(step, this.state.case.operativeSide);
     const l = this.landmarks(side);
     let ok = true;
-    switch (step.kind) {
-      case 'teardrop':
-        l.teardrop = clicks[0];
-        break;
-      case 'lt':
-        l.lesserTrochanter = clicks[0];
-        break;
-      case 'gt':
-        l.greaterTrochanter = clicks[0];
-        break;
-      case 'acetEdge':
-        l.acetabularEdge = clicks[0];
-        break;
-      case 'head':
-        ok = this.detectHead(side, clicks[0]);
-        break;
-      case 'canal':
-        l.canalSeeds = [clicks[0], clicks[1]];
-        ok = this.detectCanal(side);
-        break;
+    const pk = POINT_FOR_STEP[step.kind];
+    if (pk) l[pk] = clicks[0];
+    else if (step.kind === 'head') ok = this.detectHead(side, clicks[0]);
+    else {
+      l.canalSeeds = [clicks[0], clicks[1]];
+      ok = this.detectCanal(side);
     }
     this.state.pendingClicks = [];
     if (ok) this.setStatusOf(side, KEY_FOR_STEP[step.kind], 'confirmed');
@@ -529,6 +510,10 @@ export function finalPoint(l: SideLandmarks, key: LandmarkKey): Vec2 | undefined
       return l.lesserTrochanter;
     case 'acetabularEdge':
       return l.acetabularEdge;
+    case 'ilioischial':
+      return l.ilioischial;
+    case 'sourcil':
+      return l.sourcil;
     case 'greaterTrochanter':
       return l.greaterTrochanter;
   }

@@ -60,6 +60,9 @@ export interface CupPlan {
   /** Lateral uncovered rim beyond the acetabular edge, mm (only when the edge was marked). */
   lateralUncoverage?: number;
   manual: boolean;
+  /** Height of the inferomedial rim above the teardrop line (mm). */
+  rimAboveTeardrop: number;
+  placement: 'anatomic' | 'teardrop' | 'native' | 'manual';
 }
 
 /** Leg-length (+ = longer) and global-offset (+ = more) change, mm. */
@@ -196,11 +199,20 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   // ---- Cup -------------------------------------------------------------
   const cupFamily = lib.cups.find((f) => f.id === o.cupFamilyId) ?? lib.cups[0];
   if (opL.head && opL.teardrop && cupFamily) {
-    result.cup = planCup(c, m, cupFamily, toFrame(m.pelvis, toMm(opL.teardrop, mmPerPx)), opL.acetabularEdge ? toFrame(m.pelvis, toMm(opL.acetabularEdge, mmPerPx)) : undefined);
+    const pf = (p?: Vec2) => (p ? toFrame(m.pelvis, toMm(p, mmPerPx)) : undefined);
+    result.cup = planCup(c, m, cupFamily, {
+      teardrop: pf(opL.teardrop)!,
+      edge: pf(opL.acetabularEdge),
+      ilioischial: pf(opL.ilioischial),
+      sourcil: pf(opL.sourcil),
+    });
+    if (o.cupPlacement === 'anatomic' && result.cup.placement === 'teardrop') {
+      warnings.push('Mark the ilioischial line and the sourcil to place the cup anatomically; using the teardrop for now.');
+    }
     if (result.cup.headClamped) {
       warnings.push(`A ${o.headDiameter} mm head does not fit a ${result.cup.size.outerDiameter} mm cup; using ${result.cup.bearingDiameter} mm.`);
     }
-    if (result.cup.size.outerDiameter !== result.cup.autoSize && o.cupSizeOverride === null) {
+    if (result.cup.placement !== 'anatomic' && result.cup.size.outerDiameter !== result.cup.autoSize && o.cupSizeOverride === null) {
       warnings.push(`Cup size clamped to library range (${result.cup.size.outerDiameter} mm).`);
     }
   }
@@ -391,32 +403,53 @@ export function fillSamples(size: StemSize, pose: StemPose, profile: CanalProfil
   return out;
 }
 
-export function planCup(
-  c: CaseData,
-  m: Measurements,
-  family: CupFamily,
-  teardrop: Vec2,
-  acetabularEdge?: Vec2,
-): CupPlan {
+/** Acetabular landmarks for cup placement, in the pelvic frame (mm; u lateral, v superior). */
+export interface AcetabularRefs {
+  teardrop: Vec2;
+  edge?: Vec2;
+  ilioischial?: Vec2;
+  sourcil?: Vec2;
+}
+
+export function planCup(c: CaseData, m: Measurements, family: CupFamily, refs: AcetabularRefs): CupPlan {
   const o = c.options;
-  const headDiameter = m.op.headDiameter ?? 50;
-  const desired = headDiameter + o.cupOversize;
   const sizes = family.sizes;
-  let size: CupSize =
-    o.cupSizeOverride !== null
-      ? sizes.reduce((best, s) => (Math.abs(s.outerDiameter - o.cupSizeOverride!) < Math.abs(best.outerDiameter - o.cupSizeOverride!) ? s : best))
-      : sizes.find((s) => s.outerDiameter >= desired) ?? sizes[sizes.length - 1];
-  const autoSize = Math.ceil(desired / 2) * 2;
-  const r = size.outerDiameter / 2;
   const incl = rad(o.cupInclination);
+  const anatomic = o.cupPlacement === 'anatomic' && !!refs.ilioischial && !!refs.sourcil;
+
+  // Size. Anatomic: the largest cup that spans from the ilioischial line to the
+  // lateral acetabular edge (dome on the line, superolateral rim at the edge):
+  //   medial dome at I + R, rim at centre + R·cos(i)  →  2R = 2(E − I)/(1 + cos i).
+  // Otherwise: native head diameter plus the oversize allowance.
+  let desired: number;
+  if (anatomic && refs.edge) {
+    desired = (2 * (refs.edge.x - refs.ilioischial!.x - o.cupMedialWallOffset)) / (1 + Math.cos(incl));
+  } else {
+    desired = (m.op.headDiameter ?? 50) + o.cupOversize;
+  }
+  const autoSize = Math.round(desired / 2) * 2;
+  let size: CupSize;
+  if (o.cupSizeOverride !== null) {
+    size = sizes.reduce((best, s) => (Math.abs(s.outerDiameter - o.cupSizeOverride!) < Math.abs(best.outerDiameter - o.cupSizeOverride!) ? s : best));
+  } else if (anatomic && refs.edge) {
+    // Largest size that stays within the lateral edge (1 mm leeway).
+    size = [...sizes].reverse().find((s) => s.outerDiameter <= desired + 1) ?? sizes[0];
+  } else {
+    size = sizes.find((s) => s.outerDiameter >= desired) ?? sizes[sizes.length - 1];
+  }
+  const r = size.outerDiameter / 2;
+
   let center: Vec2;
   if (o.cupCenter) {
     center = o.cupCenter;
+  } else if (anatomic) {
+    // Dome against the ilioischial line medially and the sclerotic sourcil superiorly.
+    center = { x: refs.ilioischial!.x + o.cupMedialWallOffset + r, y: refs.sourcil!.y - r };
   } else if (o.cupPlacement === 'native' && m.op.headCenter) {
     center = m.op.headCenter;
   } else {
     // Medial wall abuts the teardrop; inferomedial rim level with its inferior tip.
-    center = { x: teardrop.x + o.cupMedialWallOffset + r, y: teardrop.y + r * Math.sin(incl) };
+    center = { x: refs.teardrop.x + o.cupMedialWallOffset + r, y: refs.teardrop.y + r * Math.sin(incl) };
   }
   const rimDir = { x: Math.cos(incl), y: Math.sin(incl) };
   const superolateralRim = add(center, scale(rimDir, r));
@@ -431,7 +464,9 @@ export function planCup(
     superolateralRim,
     bearingDiameter: o.headDiameter !== null ? Math.min(o.headDiameter, size.maxHeadDiameter) : size.maxHeadDiameter,
     headClamped: o.headDiameter !== null && o.headDiameter > size.maxHeadDiameter,
-    lateralUncoverage: acetabularEdge ? superolateralRim.x - acetabularEdge.x : undefined,
+    lateralUncoverage: refs.edge ? superolateralRim.x - refs.edge.x : undefined,
+    rimAboveTeardrop: inferomedialRim.y - refs.teardrop.y,
+    placement: o.cupCenter ? 'manual' : anatomic ? 'anatomic' : o.cupPlacement === 'native' ? 'native' : 'teardrop',
     manual: !!o.cupCenter,
   };
 }

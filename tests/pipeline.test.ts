@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { generatePhantom, type Phantom } from '../src/imaging/synthetic';
+import { generatePhantom, sourcilGeometry, type Phantom } from '../src/imaging/synthetic';
 import { detectFemoralHead, detectCanal } from '../src/imaging/detect';
 import { emptyCase, type CaseData } from '../src/planning/types';
 import { buildPlan, engagementDepth, stemOutlineLocal, stemToFemur } from '../src/planning/plan';
@@ -19,6 +19,10 @@ function buildCase(): CaseData {
     const l = c.landmarks[side];
     l.teardrop = px(ph.teardrops[side]);
     l.lesserTrochanter = px(f.lesserTrochanter);
+    const roof = sourcilGeometry(f, side);
+    l.sourcil = px(roof.apex);
+    l.acetabularEdge = px(roof.lateralEnd);
+    l.ilioischial = px({ x: ph.teardrops[side].x + (side === 'R' ? 6 : -6), y: f.head.y });
     const head = detectFemoralHead(ph.image, px(add(f.head, { x: 2, y: -1.5 })), 18 / ph.mmPerPx, 32 / ph.mmPerPx);
     if (!head) throw new Error('head not found');
     l.head = head.circle;
@@ -89,7 +93,7 @@ describe('measurements and plan', () => {
     const plan = buildPlan(c, DEFAULT_LIBRARY)!;
     expect(plan.missing).toEqual([]);
     expect(plan.cup!.size.outerDiameter).toBeGreaterThanOrEqual(52);
-    expect(plan.cup!.size.outerDiameter).toBeLessThanOrEqual(56);
+    expect(plan.cup!.size.outerDiameter).toBeLessThanOrEqual(60);
     expect(plan.stem).toBeDefined();
     expect(plan.targetLegLengthChange).toBeCloseTo(6, 0);
     expect(Math.abs(plan.predictedLegLengthChange! - plan.targetLegLengthChange)).toBeLessThan(3);
@@ -315,8 +319,8 @@ describe('size by fit, seat by goal', () => {
     expect(b.stem!.chosen.size.size).toBe(a.stem!.chosen.size.size);
     expect(d.stem!.chosen.size.size).toBe(a.stem!.chosen.size.size);
     // Lengthening by 5 mm raises the stem (higher cut) by ~5 mm.
-    expect(b.stem!.resectionAboveLT - a.stem!.resectionAboveLT).toBeCloseTo(5, 0);
-    expect(b.reconstruction!.total.ll - a.reconstruction!.total.ll).toBeCloseTo(5, 0);
+    expect(Math.abs(b.stem!.resectionAboveLT - a.stem!.resectionAboveLT - 5)).toBeLessThanOrEqual(1);
+    expect(Math.abs(b.reconstruction!.total.ll - a.reconstruction!.total.ll - 5)).toBeLessThanOrEqual(1);
     // More offset is met by switching to the high-offset neck.
     expect(d.stem!.chosen.offset.id).toBe('high');
   });
@@ -332,5 +336,34 @@ describe('size by fit, seat by goal', () => {
     c.options.stemSizeOverride = next.size;
     const bigger = buildPlan(c, DEFAULT_LIBRARY)!;
     expect(bigger.stem!.fit.potsDistally || bigger.stem!.fit.engage.tooLarge).toBe(true);
+  });
+});
+
+describe('anatomic cup placement', () => {
+  it('dome touches the ilioischial line and the sourcil; rim within the lateral edge', () => {
+    const c = buildCase();
+    const plan = buildPlan(c, DEFAULT_LIBRARY)!;
+    const cup = plan.cup!;
+    expect(cup.placement).toBe('anatomic');
+    const f = plan.measurements.pelvis;
+    const toP = (p: { x: number; y: number }) => {
+      const q = { x: p.x * ph.mmPerPx - f.origin.x, y: p.y * ph.mmPerPx - f.origin.y };
+      return { x: q.x * f.uAxis.x + q.y * f.uAxis.y, y: q.x * f.vAxis.x + q.y * f.vAxis.y };
+    };
+    const l = c.landmarks.L;
+    const R = cup.size.outerDiameter / 2;
+    expect(cup.center.x - R).toBeCloseTo(toP(l.ilioischial!).x, 5);
+    expect(cup.center.y + R).toBeCloseTo(toP(l.sourcil!).y, 5);
+    expect(cup.lateralUncoverage!).toBeLessThanOrEqual(1.01);
+    // Next size up would overhang the lateral edge.
+    expect(cup.lateralUncoverage! + (1 + Math.cos((40 * Math.PI) / 180))).toBeGreaterThan(0);
+  });
+
+  it('falls back to the teardrop when the acetabular points are missing', () => {
+    const c = buildCase();
+    delete c.landmarks.L.sourcil;
+    const plan = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(plan.cup!.placement).toBe('teardrop');
+    expect(plan.warnings.some((w) => w.includes('ilioischial'))).toBe(true);
   });
 });

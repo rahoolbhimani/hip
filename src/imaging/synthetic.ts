@@ -67,8 +67,8 @@ export function generatePhantom(opts: { mmPerPx?: number; noise?: number; lldMm?
   const teardrops = { R: { x: 155, y: 140 }, L: { x: 245, y: 140 } };
   // The left hip is the arthritic/short side by `lld` mm.
   const femora = {
-    R: makeFemur('R', teardrops.R, 42, 24),
-    L: makeFemur('L', teardrops.L, 42 - lld, 24.5),
+    R: makeFemur('R', teardrops.R, 34, 24),
+    L: makeFemur('L', teardrops.L, 34 - lld, 24.5),
   };
   // Shift the whole left femur proximally with its LT.
   femora.L.head.y -= lld;
@@ -97,6 +97,7 @@ export function generatePhantom(opts: { mmPerPx?: number; noise?: number; lldMm?
 
       for (const side of ['R', 'L'] as const) {
         v = Math.max(v, femurIntensity(femora[side], side, x, y));
+        v = Math.max(v, sourcilIntensity(femora[side], side, x, y));
       }
       // Calibration marker (metal: brightest).
       const dm = Math.hypot(x - markerCenter.x, y - markerCenter.y);
@@ -106,6 +107,28 @@ export function generatePhantom(opts: { mmPerPx?: number; noise?: number; lldMm?
     }
   }
   return { image: img, mmPerPx, markerCenter, markerDiameterMm, teardrops, femora };
+}
+
+/** Sclerotic sourcil: bright arc over the head from 60° (lateral) to 150° (medial) above horizontal. */
+export function sourcilGeometry(f: PhantomFemur, side: 'R' | 'L'): { radius: number; lateralEnd: Vec2; apex: Vec2 } {
+  const lat = side === 'R' ? -1 : 1;
+  const radius = f.headRadius + 3;
+  const a = (60 * Math.PI) / 180;
+  return {
+    radius,
+    lateralEnd: { x: f.head.x + lat * radius * Math.cos(a), y: f.head.y - radius * Math.sin(a) },
+    apex: { x: f.head.x, y: f.head.y - radius },
+  };
+}
+
+function sourcilIntensity(f: PhantomFemur, side: 'R' | 'L', x: number, y: number): number {
+  const lat = side === 'R' ? -1 : 1;
+  const dx = (x - f.head.x) * lat; // + = lateral
+  const dy = f.head.y - y; // + = up
+  const r = Math.hypot(dx, dy);
+  const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+  const R = f.headRadius + 3;
+  return Math.abs(r - R) < 1.3 && ang >= 60 && ang <= 150 ? 215 : 0;
 }
 
 function pelvisIntensity(x: number, y: number): number {
@@ -131,6 +154,10 @@ function pelvisIntensity(x: number, y: number): number {
     const ox = (x - (cx + (cx < 200 ? 18 : -18))) / 16;
     const oy = (y - 172) / 20;
     if (ox * ox + oy * oy < 1) v = 75;
+  }
+  // Ilioischial (Köhler's) line: thin bright vertical line just medial to each teardrop.
+  for (const cx of [155 + 6, 245 - 6]) {
+    if (Math.abs(x - cx) < 0.9 && y > 70 && y < 150) v = Math.max(v, 190);
   }
   // Teardrop: a brighter U-shaped line at each medial acetabular wall.
   for (const cx of [155, 245]) {

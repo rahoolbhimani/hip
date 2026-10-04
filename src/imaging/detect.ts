@@ -42,14 +42,21 @@ export function detectFemoralHead(
       profile.push(sample(img, seed.x + dir.x * r, seed.y + dir.y * r));
     }
     const d = derivative(smooth1d(profile, sigma));
+    const lo = Math.floor(minRadiusPx);
+    const hi = Math.min(maxRadiusPx, d.length - 2);
+    // Head is denser (brighter) than the joint space: negative gradient going
+    // out. Take the FIRST strong fall rather than the strongest, so a bright
+    // sclerotic sourcil just outside the head is not mistaken for its edge.
+    let strongest = 0;
+    for (let r = lo; r <= hi; r++) strongest = Math.max(strongest, -d[r]);
     let bestR = -1;
-    let bestVal = 0;
-    for (let r = Math.floor(minRadiusPx); r <= Math.min(maxRadiusPx, d.length - 2); r++) {
-      // Head is denser (brighter) than the joint space: negative gradient going out.
-      const v = -d[r];
-      if (v > bestVal) {
-        bestVal = v;
-        bestR = r;
+    if (strongest > 0) {
+      for (let r = Math.max(lo, 1); r <= hi; r++) {
+        const v = -d[r];
+        if (v >= 0.5 * strongest && v >= -d[r - 1] && v >= -d[r + 1]) {
+          bestR = r;
+          break;
+        }
       }
     }
     if (bestR > 0) candidates.push(add(seed, scale(dir, bestR)));

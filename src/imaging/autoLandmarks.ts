@@ -22,6 +22,9 @@ export type PatientSide = 'R' | 'L';
 
 export interface AutoSide {
   head?: Circle;
+  sourcil?: Vec2;
+  acetabularEdge?: Vec2;
+  ilioischial?: Vec2;
   teardrop?: Vec2;
   lesserTrochanter?: Vec2;
   canalSeeds?: [Vec2, Vec2];
@@ -290,6 +293,12 @@ export function autoDetectLandmarks(
 
     const td = findTeardrop(s, hc, lat, mm);
     if (td) result.sides[side].teardrop = toFull(td);
+    const roof = findSourcil(s, hc, hr, lat, mm);
+    if (roof) {
+      result.sides[side].sourcil = toFull(roof.apex);
+      result.sides[side].acetabularEdge = toFull(roof.edge);
+    }
+    if (td) result.sides[side].ilioischial = toFull(findIlioischial(s, hc, td, lat, mm));
   }
 
   // Teardrops should be roughly level; if one is far off, mirror the other's height.
@@ -408,4 +417,75 @@ function findTeardrop(s: Small, hc: Vec2, lat: number, mm: (v: number) => number
     }
   }
   return best && best.v > 0 ? { x: best.x, y: best.y } : prior;
+}
+
+/**
+ * Sclerotic sourcil over the head: along rays from the head centre, the
+ * brightest point just outside the head. The apex is taken straight up; the
+ * lateral edge is where the bright roof ends sweeping laterally.
+ */
+function findSourcil(s: Small, hc: Vec2, hr: number, lat: number, mm: (v: number) => number): { apex: Vec2; edge: Vec2 } | null {
+  const r0 = hr + mm(1);
+  const r1 = hr + mm(12);
+  const ray = (deg: number): { v: number; r: number } => {
+    const a = (deg * Math.PI) / 180;
+    const dir = { x: lat * Math.cos(a), y: -Math.sin(a) };
+    let best = { v: -Infinity, r: r0 };
+    for (let r = r0; r <= r1; r += 0.5) {
+      const v = sample(s.img, hc.x + dir.x * r, hc.y + dir.y * r);
+      if (v > best.v) best = { v, r };
+    }
+    return best;
+  };
+  const at = (deg: number, r: number): Vec2 => {
+    const a = (deg * Math.PI) / 180;
+    return { x: hc.x + lat * Math.cos(a) * r, y: hc.y - Math.sin(a) * r };
+  };
+  // Apex: median radius of the near-vertical rays.
+  const up = [84, 87, 90, 93, 96].map(ray);
+  if (up.some((u) => Number.isNaN(u.v))) return null;
+  const apexR = median(up.map((u) => u.r));
+  const roofV = median(up.map((u) => u.v));
+  // Surroundings: intensity well outside the roof.
+  const outside: number[] = [];
+  for (let deg = 0; deg <= 180; deg += 10) {
+    const q = at(deg, hr + mm(20));
+    const v = sample(s.img, q.x, q.y);
+    if (!Number.isNaN(v)) outside.push(v);
+  }
+  const thr = 0.5 * (roofV + median(outside));
+  let edgeDeg = 90;
+  let edgeR = apexR;
+  for (let deg = 87; deg >= 5; deg -= 3) {
+    const rr = ray(deg);
+    if (!(rr.v >= thr)) break;
+    edgeDeg = deg;
+    edgeR = rr.r;
+  }
+  return { apex: at(90, apexR), edge: at(edgeDeg, edgeR) };
+}
+
+/** Ilioischial line at head-centre height: the brightest thin vertical ridge near the teardrop's medial side. */
+function findIlioischial(s: Small, hc: Vec2, td: Vec2, lat: number, mm: (v: number) => number): Vec2 {
+  const medial = -lat;
+  const y = hc.y;
+  const avg = (x: number): number => {
+    let a = 0;
+    let n = 0;
+    for (let dy = -mm(3); dy <= mm(3); dy++) {
+      const v = sample(s.img, x, y + dy);
+      if (!Number.isNaN(v)) {
+        a += v;
+        n++;
+      }
+    }
+    return n ? a / n : NaN;
+  };
+  let best = { score: -Infinity, x: td.x + medial * mm(3) };
+  for (let k = -mm(4); k <= mm(14); k += 0.5) {
+    const x = td.x + medial * k;
+    const score = avg(x) - 0.5 * (avg(x - mm(2.5)) + avg(x + mm(2.5)));
+    if (score > best.score) best = { score, x };
+  }
+  return { x: best.x, y };
 }

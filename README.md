@@ -26,7 +26,10 @@ Click **Demo case** to load a synthetic radiograph (a left THA with the operativ
 5. **Goals**, set per case:
    - **Leg length**: equal to the other side (plus any extra), or change by a set number of mm.
    - **Offset**: match the other side (plus any extra), or change by a set number of mm.
-6. **Implants.** The app picks the stem size, standard or high-offset neck, seating depth and cup position that best meet the goals, always with the 0 mm head. You can override any of these:
+6. **Implants.**
+   - **Cup:** sits between the ilioischial line and the lateral acetabular edge. Its dome touches the ilioischial line medially and the sclerotic sourcil superiorly, at the chosen inclination. The size is the largest whose superolateral rim reaches the lateral edge without overhanging it.
+   - **Stem size:** chosen by canal fit alone: the largest size that fills the metaphysis without locking distally.
+   - **Goals:** met by moving the stem up or down, which moves the neck cut, and by choosing the standard or high-offset neck. The 0 mm head is always used. You can override any of these:
    - force a stem size, or the neck offset with the **Auto / Standard / High** switch (in Auto, the neck the planner picked is outlined)
    - choose the prosthetic **femoral head** size (28–40 mm, limited by what the cup accepts)
    - **drag the stem** to move it in the canal, or drag the dot at its tip to tilt it
@@ -110,6 +113,16 @@ Each change is reported in two parts:
 - **stem:** native head centre minus the prosthetic head on the femur
 
 The display also shows where the lesser trochanter ends up after reduction ("LT after").
+
+### Cup placement
+
+The cup is placed using three operative-side points, each proposed automatically and confirmed in review:
+
+- **Ilioischial line:** the medial limit, where the cup dome touches it.
+- **Sclerotic sourcil apex:** the dome sits against it.
+- **Lateral acetabular edge:** the lateral limit.
+
+The cup size follows from these geometrically: 2R = 2(edge − ilioischial) / (1 + cos inclination). If the ilioischial line or the sourcil is missing, the teardrop method is used instead, with a warning.
 
 ### Automatic stem placement
 

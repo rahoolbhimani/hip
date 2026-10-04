@@ -146,6 +146,8 @@ const STEP_KEY: Record<string, LandmarkKey> = {
   lt: 'lesserTrochanter',
   canal: 'canal',
   acetEdge: 'acetabularEdge',
+  ilio: 'ilioischial',
+  sourcil: 'sourcil',
   gt: 'greaterTrochanter',
 };
 
@@ -195,7 +197,9 @@ const REVIEW_TEXT: Record<LandmarkKey, [string, string]> = {
   head: ['Femoral head', 'The circle should follow the femoral head outline. Drag the centre or the edge dot.'],
   lesserTrochanter: ['Lesser trochanter', 'Should sit on the most prominent medial point of the lesser trochanter.'],
   canal: ['Femoral canal', 'Green dots should sit on the inner cortex. Drag either seed to move the search.'],
-  acetabularEdge: ['Acetabular edge', 'Superolateral edge of the sourcil.'],
+  acetabularEdge: ['Lateral acetabular edge', 'Should sit on the lateral edge of the acetabulum (lateral end of the sourcil): the cup\'s lateral limit.'],
+  ilioischial: ['Ilioischial line', 'Should sit on the ilioischial (Köhler\'s) line at the level of the acetabulum: the cup\'s medial limit.'],
+  sourcil: ['Sourcil', 'Should sit at the top of the sclerotic sourcil: the cup dome is placed against it.'],
   greaterTrochanter: ['Greater trochanter', 'Tip of the greater trochanter.'],
 };
 
@@ -406,7 +410,7 @@ bindOption('goal-off-mode', (el) => (o().offsetGoal = { mode: el.value as 'match
 bindOption('goal-off-mm', (el) => (o().offsetGoal = { ...o().offsetGoal, mm: Number(el.value) || 0 }));
 bindOption('opt-incl', (el) => (o().cupInclination = Number(el.value)), 'input');
 bindOption('opt-placement', (el) => {
-  o().cupPlacement = el.value as 'teardrop' | 'native';
+  o().cupPlacement = el.value as 'anatomic' | 'teardrop' | 'native';
   o().cupCenter = null;
 });
 bindOption('opt-oversize', (el) => (o().cupOversize = Number(el.value) || 0));

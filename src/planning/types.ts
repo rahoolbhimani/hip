@@ -33,8 +33,12 @@ export interface SideLandmarks {
   lesserTrochanter?: Vec2;
   /** Tip of the greater trochanter (optional, for reporting). */
   greaterTrochanter?: Vec2;
-  /** Superolateral edge of the acetabular sourcil (optional, for cup coverage). */
+  /** Lateral edge of the acetabulum (superolateral end of the sourcil). */
   acetabularEdge?: Vec2;
+  /** A point on the ilioischial (Köhler's) line at the level of the acetabulum. */
+  ilioischial?: Vec2;
+  /** Apex of the sclerotic sourcil (superior weight-bearing acetabular rim). */
+  sourcil?: Vec2;
   /** Femoral head contour. */
   head?: Circle;
   /** Two seed points inside the medullary canal (proximal, distal). */
@@ -51,7 +55,10 @@ export interface SideLandmarks {
   proposals?: Partial<Record<LandmarkKey, Vec2>>;
 }
 
-export type LandmarkKey = 'teardrop' | 'lesserTrochanter' | 'greaterTrochanter' | 'acetabularEdge' | 'head' | 'canal';
+export type LandmarkKey = 'teardrop' | 'lesserTrochanter' | 'greaterTrochanter' | 'acetabularEdge' | 'ilioischial' | 'sourcil' | 'head' | 'canal';
+
+/** Landmarks that are a single point (as opposed to the head circle or canal). */
+export type PointKey = 'teardrop' | 'lesserTrochanter' | 'greaterTrochanter' | 'acetabularEdge' | 'ilioischial' | 'sourcil';
 export type LandmarkStatus = 'proposed' | 'confirmed';
 
 /**
@@ -84,8 +91,12 @@ export interface PlanOptions {
   cupOversize: number;
   /** Extra lateral shift of the cup's medial wall from the teardrop (mm). */
   cupMedialWallOffset: number;
-  /** Cup placement strategy. */
-  cupPlacement: 'teardrop' | 'native';
+  /**
+   * Cup placement: 'anatomic' = dome against the ilioischial line and the
+   * sclerotic sourcil, sized to the lateral acetabular edge; 'teardrop' =
+   * inferomedial rim at the teardrop; 'native' = at the native head centre.
+   */
+  cupPlacement: 'anatomic' | 'teardrop' | 'native';
   /** Leg-length goal: equalise with the contralateral side, or change by a set amount. */
   legLengthGoal: Goal;
   /** Offset goal: match the contralateral global offset, or change by a set amount. */
@@ -112,8 +123,8 @@ export const DEFAULT_OPTIONS: PlanOptions = {
   cupFamilyId: 'generic-hemi-shell',
   cupInclination: 40,
   cupOversize: 4,
-  cupMedialWallOffset: 2,
-  cupPlacement: 'teardrop',
+  cupMedialWallOffset: 0,
+  cupPlacement: 'anatomic',
   legLengthGoal: { mode: 'match', mm: 0 },
   offsetGoal: { mode: 'match', mm: 0 },
   stemAlignment: 'canal',

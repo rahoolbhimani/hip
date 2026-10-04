@@ -129,6 +129,14 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: AppState, k: numbe
     if (l.lesserTrochanter) target(ctx, l.lesserTrochanter, C.landmark, k, undefined, mlabel, `lt-${side}`);
     if (l.greaterTrochanter) target(ctx, l.greaterTrochanter, C.landmark, k, t('GT'), mlabel, `gt-${side}`);
     if (l.acetabularEdge) target(ctx, l.acetabularEdge, C.landmark, k, t('Edge'), mlabel, `edge-${side}`);
+    if (l.sourcil) target(ctx, l.sourcil, C.landmark, k, t('Sourcil'), mlabel, `sourcil-${side}`);
+    if (l.ilioischial && m && mmPerPx) {
+      // Ilioischial line: short segment along the pelvic vertical through the point.
+      const f = m.pelvis;
+      const q = toFrameXY(f, scale(l.ilioischial, mmPerPx));
+      line(ctx, toPx(fromFrame(f, { x: q.x, y: q.y + 25 })), toPx(fromFrame(f, { x: q.x, y: q.y - 25 })), C.landmark, 1.2 * k, [4 * k, 3 * k]);
+    }
+    if (l.ilioischial) target(ctx, l.ilioischial, C.landmark, k, t('II'), mlabel, `ilio-${side}`);
     if (l.head) {
       // Native head: thin outline, native centre as a small cross.
       circle(ctx, l.head.center, l.head.radius, C.head, (isOp ? 1.2 : 1) * k, isOp ? [] : [5 * k, 4 * k]);
@@ -256,6 +264,9 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: AppState, k: numbe
         : key === 'canal' && l.canalSeeds ? [...l.canalSeeds]
         : key === 'teardrop' && l.teardrop ? [l.teardrop]
         : key === 'lesserTrochanter' && l.lesserTrochanter ? [l.lesserTrochanter]
+        : key === 'acetabularEdge' && l.acetabularEdge ? [l.acetabularEdge]
+        : key === 'ilioischial' && l.ilioischial ? [l.ilioischial]
+        : key === 'sourcil' && l.sourcil ? [l.sourcil]
         : [];
       for (const p of pts) circle(ctx, p, 13 * k, C.proposed, 1.5 * k, [3 * k, 3 * k]);
     }
@@ -269,6 +280,9 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: AppState, k: numbe
       : cur.key === 'canal' ? l?.canalSeeds?.[0]
       : cur.key === 'teardrop' ? l?.teardrop
       : cur.key === 'lesserTrochanter' ? l?.lesserTrochanter
+      : cur.key === 'acetabularEdge' ? l?.acetabularEdge
+      : cur.key === 'ilioischial' ? l?.ilioischial
+      : cur.key === 'sourcil' ? l?.sourcil
       : undefined;
     if (p) {
       circle(ctx, p, 22 * k, C.proposed, 2.5 * k);
