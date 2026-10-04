@@ -129,18 +129,29 @@ body { display: flex; flex-direction: column; }
 .viewer-canvas { display: block; touch-action: none; }
 .status {
   position: absolute;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 12px;
+  bottom: 12px;
   background: rgba(13, 17, 23, 0.88);
   border: 1px solid var(--border);
   padding: 6px 12px;
   border-radius: 8px;
-  max-width: 80%;
-  text-align: center;
+  max-width: min(520px, 60%);
   pointer-events: none;
   z-index: 2;
 }
+.viewer-tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.viewer-tools .btn { background: rgba(28, 36, 48, 0.92); }
+.viewer-tools .btn.on { border-color: var(--accent); color: var(--text); }
+.viewer-tools .btn:not(.on) { color: var(--muted); }
 .empty[hidden] { display: none; }
 .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: var(--muted); padding: 24px; }
 .empty h1 { color: var(--text); font-size: 22px; margin: 0 0 8px; }
@@ -205,7 +216,7 @@ h3 { font-size: 12px; margin: 12px 0 4px; color: var(--text); }
 .review-card {
   position: absolute;
   left: 50%;
-  bottom: 16px;
+  bottom: 56px;
   transform: translateX(-50%);
   z-index: 3;
   background: rgba(21, 27, 35, 0.96);

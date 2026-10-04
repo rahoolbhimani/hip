@@ -43,7 +43,19 @@ export function bitmapToGray(bitmap: ImageBitmap): GrayImage {
 const JPEG_BASELINE = new Set(['1.2.840.10008.1.2.4.50', '1.2.840.10008.1.2.4.51']);
 const UNCOMPRESSED = new Set(['1.2.840.10008.1.2', '1.2.840.10008.1.2.1', '1.2.840.10008.1.2.2', '1.2.840.10008.1.2.1.99']);
 
-async function loadDicom(buf: Uint8Array, name: string): Promise<LoadedImage> {
+async function browserJpeg(bytes: Uint8Array): Promise<GrayImage> {
+  return bitmapToGray(await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' })));
+}
+
+/**
+ * Decode a DICOM file. `decodeJpeg` handles JPEG-baseline pixel data (the
+ * browser's decoder by default; scripts outside the browser pass their own).
+ */
+export async function loadDicom(
+  buf: Uint8Array,
+  name: string,
+  decodeJpeg: (bytes: Uint8Array) => Promise<GrayImage> = browserJpeg,
+): Promise<LoadedImage> {
   const ds = dicomParser.parseDicom(buf);
   const rows = ds.uint16('x00280010');
   const cols = ds.uint16('x00280011');
@@ -60,8 +72,7 @@ async function loadDicom(buf: Uint8Array, name: string): Promise<LoadedImage> {
     gray = decodeRaw(ds, pixelEl, rows, cols, ts === '1.2.840.10008.1.2.2');
   } else if (JPEG_BASELINE.has(ts)) {
     const frame = dicomParser.readEncapsulatedPixelData(ds, pixelEl, 0);
-    const bitmap = await createImageBitmap(new Blob([new Uint8Array(frame)], { type: 'image/jpeg' }));
-    gray = bitmapToGray(bitmap);
+    gray = await decodeJpeg(new Uint8Array(frame));
   } else {
     throw new Error(`Unsupported DICOM transfer syntax ${ts}. Export the image as uncompressed DICOM, PNG or JPEG.`);
   }

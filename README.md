@@ -31,9 +31,30 @@ Click **Demo case** to load a synthetic radiograph (a left THA with the operativ
    - **drag the stem** to move it in the canal, or drag the dot at its tip to tilt it
    - **drag the cup centre** to move the cup
    - **Reset** returns the stem or cup to automatic placement
-7. **Export**: **Download JPEG** saves the templated radiograph at full resolution. You can also save or load the case as JSON.
+7. **Read the result.**
+   - **Summary box** (center top): cup size, stem size, pre-op LLD, pre-op offset difference, post-op LLD and post-op offset difference. Values are for the operative side relative to the other side: − means shorter or less offset, + means longer or more offset.
+   - **Implant legend** in the operative-side corner: cup in blue; stem name, size and offset in green.
+   - **Templates:** the cup is blue and the stem green, each with its centre of rotation marked by a dot.
+   - **Measurements:** in red and cyan. LLD is the height from the teardrop line to each lesser trochanter (A = affected side, NA = non-affected side).
+   - **Clutter:** drag any label or the summary box out of the way. `M` or the **Measurements** button hides all measurements, and **Reset labels** puts everything back.
+8. **Export**: **Download JPEG** saves the templated radiograph at full resolution, including the summary box and legend. You can also save or load the case as JSON.
 
-Keyboard shortcuts: Enter confirms the point under review, `Esc` stops the review or cancels the current tool, `f` fits the image to the view.
+Keyboard shortcuts: Enter confirms the point under review, `Esc` stops the review or cancels the current tool, `M` toggles measurements, `f` fits the image to the view.
+
+**Stem orientation.** By default the stem template is upright to the inter-teardrop line: its axis is perpendicular to the line and its horizontal reference is parallel to it. The femoral shaft is usually adducted a few degrees, so an upright stem crosses the canal at that angle and may seat smaller than a canal-aligned one. Use **Stem orientation → Along femoral canal** to compare.
+
+## Checking detection accuracy
+
+Auto-detection uses no trained model, so measure it on your own films:
+
+- **Per case:** the results panel's *Auto-detection check* lists how far you moved each proposed point before confirming it. That distance is the detector's error on that film. Saved case files keep both the proposed and the confirmed positions.
+- **In batch:** put de-identified images and their saved `.plan.json` case files in one folder, then run:
+
+  ```bash
+  EVAL_DIR=/path/to/folder npm run eval
+  ```
+
+  It runs the detector on every image, compares the result with your confirmed points, and writes `eval-report.md`. The report gives the median and 90th-percentile error, % within 2 mm and 5 mm, and the miss rate, for each landmark type. Everything runs locally.
 
 ## Stems
 

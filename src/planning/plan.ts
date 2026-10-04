@@ -125,6 +125,8 @@ export interface PlanResult {
   /** Operative minus contralateral leg length after surgery (mm). */
   postopLegLengthDifference?: number;
   postopGlobalOffset?: number;
+  /** Tilt (deg, + = varus) the auto plan applies to the stem relative to the canal axis. */
+  autoStemTilt?: number;
   /** Shift of the centre of rotation, pelvic frame (u lateral, v superior), mm. */
   corShift?: Vec2;
   warnings: string[];
@@ -213,6 +215,14 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   }
 
   const nativeHeadF = toFrame(femur, headMm);
+  // Auto stem orientation: upright to the inter-teardrop line (axis along the
+  // pelvic vertical) or along the femoral canal axis.
+  const pelvicDown = scale(m.pelvis.vAxis, -1);
+  const autoTilt =
+    o.stemAlignment === 'canal'
+      ? 0
+      : Math.max(-20, Math.min(20, (Math.atan2(-dot(pelvicDown, femur.uAxis), dot(pelvicDown, femur.vAxis)) * 180) / Math.PI));
+  result.autoStemTilt = autoTilt;
   const nativeHeadP = m.op.headCenter;
   const cupCenter = result.cup.center;
   result.corShift = sub(cupCenter, nativeHeadP);
@@ -238,7 +248,7 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   const manualPose = o.stemPose;
   const sizes = o.stemSizeOverride ? stemFamily.sizes.filter((s) => s.size === o.stemSizeOverride) : stemFamily.sizes;
   for (const size of sizes) {
-    const engage = engagementDepth(size, profile, maxResection);
+    const engage = engagementDepth(size, profile, maxResection, autoTilt);
     // Auto: from full cortical engagement up to MAX_PROUD_MM proud, so the
     // leg-length goal can be met between discrete sizes.
     const seats: Array<{ pose: StemPose; proud: number }> = manualPose
@@ -248,7 +258,7 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
       for (let proud = 0; proud <= MAX_PROUD_MM + 1e-9; proud += 0.5) {
         const depth = engage.depth - proud;
         if (proud > 0 && (engage.tooLarge || depth < -maxResection)) break;
-        seats.push({ pose: { depth, shift: 0, tilt: 0 }, proud });
+        seats.push({ pose: centredPose(size, profile, depth, autoTilt), proud });
       }
     }
     const offsets = o.offsetOverride ? size.offsets.filter((x) => x.id === o.offsetOverride) : size.offsets;
@@ -433,9 +443,22 @@ export function canalAt(profile: CanalProfileSample[], d: number): { medial: num
 }
 
 /**
+ * Pose of a stem seated at `depth` with axis tilt `tilt` (deg, + = varus),
+ * centred in the canal at mid-stem.
+ */
+export function centredPose(size: StemSize, profile: CanalProfileSample[], depth: number, tilt: number): StemPose {
+  const half = stemLength(size) / 2;
+  const t = rad(tilt);
+  const c = canalAt(profile, depth + half * Math.cos(t));
+  const centre = c ? (c.medial - c.lateral) / 2 : 0;
+  return { depth, tilt, shift: centre + half * Math.sin(t) };
+}
+
+/**
  * Deepest seat (resection level depth relative to the LT, mm) at which the
  * stem does not breach the endosteal cortex in the meta-diaphyseal region —
- * i.e. where a tapered wedge would lock.
+ * i.e. where a tapered wedge would lock. The stem keeps the given axis tilt
+ * relative to the canal and stays centred in it.
  *
  * The search starts at the highest anatomically possible resection
  * (`maxResectionAboveLT`, below the femoral head). If the stem already
@@ -445,28 +468,37 @@ export function engagementDepth(
   size: StemSize,
   profile: CanalProfileSample[],
   maxResectionAboveLT = DEFAULT_MAX_RESECTION_MM,
+  tilt = 0,
 ): { depth: number; beyondData: boolean; tooLarge: boolean } {
   const len = stemLength(size);
   const lastD = profile[profile.length - 1].d;
+  const cosT = Math.cos(rad(tilt));
   const fits = (depth: number): boolean => {
+    const pose = centredPose(size, profile, depth, tilt);
     for (let ds = MIN_ENGAGE_STEM_LEVEL; ds <= len; ds += 2) {
+      const ctr = stemToFemur(pose, { x: 0, y: ds });
       // Above the lesser trochanter the medial endosteum flares into the
       // calcar and is not captured by the canal profile.
-      if (depth + ds < MIN_ENGAGE_FEMUR_LEVEL) continue;
+      if (ctr.y < MIN_ENGAGE_FEMUR_LEVEL) continue;
       const w = stemWidthAt(size, ds);
-      const cw = canalAt(profile, depth + ds);
-      if (!w || !cw) continue;
+      if (!w) continue;
+      const med = stemToFemur(pose, { x: w.medial, y: ds });
+      const lat = stemToFemur(pose, { x: -w.lateral, y: ds });
+      const cc = canalAt(profile, ctr.y);
+      const cm = canalAt(profile, med.y);
+      const cl = canalAt(profile, lat.y);
+      if (!cc || !cm || !cl) continue;
       // Total mediolateral width is the primary criterion; the per-side check
       // is looser because it depends on the fitted axis position.
-      if (w.medial + w.lateral > cw.medial + cw.lateral + ENGAGE_TOLERANCE_MM) return false;
-      if (w.medial > cw.medial + SIDE_TOLERANCE_MM || w.lateral > cw.lateral + SIDE_TOLERANCE_MM) return false;
+      if ((med.x - lat.x) * cosT > cc.medial + cc.lateral + ENGAGE_TOLERANCE_MM) return false;
+      if (med.x > cm.medial + SIDE_TOLERANCE_MM || -lat.x > cl.lateral + SIDE_TOLERANCE_MM) return false;
     }
     return true;
   };
   let depth = -maxResectionAboveLT;
   if (!fits(depth)) return { depth, beyondData: false, tooLarge: true };
   while (depth < 60 && fits(depth + 0.5)) depth += 0.5;
-  return { depth, beyondData: depth + len > lastD, tooLarge: false };
+  return { depth, beyondData: depth + len * cosT > lastD, tooLarge: false };
 }
 
 /**

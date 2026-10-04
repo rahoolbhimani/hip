@@ -5,7 +5,10 @@ import type { Vec2 } from '../geometry/vec';
 import type { Store, AppState, ReviewItem } from '../app/store';
 import type { GrayImage } from '../imaging/gray';
 import { intensityWindow } from '../imaging/gray';
-import { drawOverlay, type Layers } from './overlay';
+import { drawOverlay, type Layers, type LabelLayer } from './overlay';
+import { drawSummary, drawLegend } from './summary';
+import { C as COLORS } from './overlay';
+import { isOnImageLeft } from '../planning/measure';
 import type { Side, StemPose } from '../planning/types';
 import { fromFrame, toFrame, scale } from '../geometry/vec';
 import { stemOutlineLocal, stemToFemur } from '../planning/plan';
@@ -27,7 +30,10 @@ export class Viewer {
   private tx = 0;
   private ty = 0;
   private drag: {
-    kind: 'pan' | 'handle' | 'stem';
+    kind: 'pan' | 'handle' | 'stem' | 'label' | 'summary';
+    labelId?: string;
+    labelStart?: Vec2;
+    summaryStart?: { fx: number; top: number };
     start: Vec2;
     moved: boolean;
     handle?: Handle;
@@ -35,7 +41,13 @@ export class Viewer {
     stemStart?: { femoral: Vec2; pose: StemPose };
   } | null = null;
   private hover: Vec2 | null = null;
-  layers: Layers = { measurements: true, canal: true, cup: true, stem: true };
+  layers: Layers = { measurements: true, canal: false, cup: true, stem: true };
+  /** Measurement labels the user dragged out of the way (offsets in CSS px). */
+  labelLayer: LabelLayer = { offsets: {}, boxes: [] };
+  summaryVisible = true;
+  /** Summary box position: horizontal centre as a fraction of the width, top in CSS px. */
+  private summaryPos = { fx: 0.5, top: 12 };
+  private summaryBox: { x: number; y: number; w: number; h: number } | null = null;
   brightness = 0;
   contrast = 1;
   invert = false;
@@ -229,6 +241,21 @@ export class Viewer {
     return best;
   }
 
+  private hitLabel(screen: Vec2): string | null {
+    const p = this.toImage(screen);
+    for (let i = this.labelLayer.boxes.length - 1; i >= 0; i--) {
+      const b = this.labelLayer.boxes[i];
+      if (inRect(p, b)) return b.id;
+    }
+    return null;
+  }
+
+  resetLabels(): void {
+    this.labelLayer.offsets = {};
+    this.summaryPos = { fx: 0.5, top: 12 };
+    this.render();
+  }
+
   /** Image px → femoral frame (mm), if a plan with a femur exists. */
   private femoralPoint(img: Vec2): Vec2 | null {
     const s = this.store.state;
@@ -261,7 +288,16 @@ export class Viewer {
     if (!this.store.state.image) return;
     this.canvas.setPointerCapture(e.pointerId);
     const sp = this.screenPoint(e);
+    if (e.button === 0 && this.summaryBox && inRect(sp, this.summaryBox)) {
+      this.drag = { kind: 'summary', start: sp, moved: false, summaryStart: { ...this.summaryPos } };
+      return;
+    }
     const handle = e.button === 0 && !this.store.state.activeTool ? this.hitHandle(sp) : null;
+    const lbl = !handle && e.button === 0 && !this.store.state.activeTool ? this.hitLabel(sp) : null;
+    if (lbl) {
+      this.drag = { kind: 'label', start: sp, moved: false, labelId: lbl, labelStart: { ...(this.labelLayer.offsets[lbl] ?? { x: 0, y: 0 }) } };
+      return;
+    }
     const stemHit = !handle && e.button === 0 && !this.store.state.activeTool ? this.hitStem(sp) : null;
     if (handle) this.drag = { kind: 'handle', start: sp, moved: false, handle };
     else if (stemHit) this.drag = { kind: 'stem', start: sp, moved: false, stemStart: stemHit };
@@ -272,7 +308,8 @@ export class Viewer {
     const sp = this.screenPoint(e);
     this.hover = this.toImage(sp);
     if (!this.drag) {
-      this.canvas.style.cursor = this.store.state.activeTool ? 'crosshair' : this.hitHandle(sp) || this.hitStem(sp) ? 'move' : 'grab';
+      const overSummary = !!this.summaryBox && inRect(sp, this.summaryBox);
+      this.canvas.style.cursor = overSummary ? 'move' : this.store.state.activeTool ? 'crosshair' : this.hitHandle(sp) || this.hitLabel(sp) || this.hitStem(sp) ? 'move' : 'grab';
       if (this.store.state.activeTool) this.render();
       return;
     }
@@ -284,6 +321,17 @@ export class Viewer {
       this.tx = this.drag.origin.tx + dx;
       this.ty = this.drag.origin.ty + dy;
       this.canvas.style.cursor = 'grabbing';
+      this.render();
+    } else if (this.drag.kind === 'summary' && this.drag.summaryStart) {
+      const dpr = window.devicePixelRatio || 1;
+      this.summaryPos = {
+        fx: Math.min(0.95, Math.max(0.05, this.drag.summaryStart.fx + dx / this.canvas.width)),
+        top: Math.max(0, this.drag.summaryStart.top + dy / dpr),
+      };
+      this.render();
+    } else if (this.drag.kind === 'label' && this.drag.labelId && this.drag.labelStart) {
+      const dpr = window.devicePixelRatio || 1;
+      this.labelLayer.offsets[this.drag.labelId] = { x: this.drag.labelStart.x + dx / dpr, y: this.drag.labelStart.y + dy / dpr };
       this.render();
     } else if (this.drag.kind === 'stem' && this.drag.moved && this.drag.stemStart) {
       const f = this.femoralPoint(this.toImage(sp));
@@ -357,7 +405,7 @@ export class Viewer {
     ctx.imageSmoothingEnabled = this.zoom < 2;
     ctx.drawImage(this.bitmap, 0, 0);
     const dpr = window.devicePixelRatio || 1;
-    drawOverlay(ctx, s, dpr / this.zoom, this.layers);
+    drawOverlay(ctx, s, dpr / this.zoom, this.layers, this.labelLayer);
     // Rubber-band preview for multi-click tools.
     if (this.hover && s.pendingClicks.length && s.activeTool) {
       const a = s.pendingClicks[s.pendingClicks.length - 1];
@@ -371,6 +419,10 @@ export class Viewer {
       ctx.stroke();
       ctx.restore();
     }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const opLeft = isOnImageLeft(s.case.operativeSide, s.case.standardOrientation);
+    drawLegend(ctx, s, this.canvas.width, (opLeft ? 12 : 52) * dpr, dpr, COLORS, opLeft);
+    this.summaryBox = this.summaryVisible && s.measurements ? drawSummary(ctx, s, this.summaryPos.fx * this.canvas.width, this.summaryPos.top * dpr, dpr) : null;
   }
 
   /** Full-resolution export of the image with overlays, as a Blob. */
@@ -389,7 +441,10 @@ export class Viewer {
     c.height = this.bitmap.height;
     const cx = c.getContext('2d')!;
     cx.drawImage(this.bitmap, 0, 0);
-    drawOverlay(cx, s, Math.max(1, c.width / 1400), this.layers);
+    const u = Math.max(1, c.width / 1400);
+    drawOverlay(cx, s, u, this.layers, { offsets: this.labelLayer.offsets, boxes: [] });
+    if (this.summaryVisible && s.measurements) drawSummary(cx, s, c.width / 2, 12 * u, u);
+    drawLegend(cx, s, c.width, 12 * u, u, COLORS, isOnImageLeft(s.case.operativeSide, s.case.standardOrientation));
     return c;
   }
 
@@ -423,4 +478,8 @@ export function reviewTarget(s: AppState, item: ReviewItem): { center: Vec2; fie
     case 'greaterTrochanter':
       return l.greaterTrochanter ? { center: l.greaterTrochanter, fieldMm: 100 } : null;
   }
+}
+
+function inRect(p: Vec2, r: { x: number; y: number; w: number; h: number }): boolean {
+  return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 }

@@ -43,6 +43,12 @@ export interface SideLandmarks {
   canal?: CanalDetection;
   /** Review state per landmark: auto-proposed points wait for the user's OK. */
   status?: Partial<Record<LandmarkKey, LandmarkStatus>>;
+  /**
+   * Where the automatic detector originally proposed each point (image px;
+   * head centre, proximal canal seed). Comparing it with the confirmed
+   * position measures the detector's error on this film.
+   */
+  proposals?: Partial<Record<LandmarkKey, Vec2>>;
 }
 
 export type LandmarkKey = 'teardrop' | 'lesserTrochanter' | 'greaterTrochanter' | 'acetabularEdge' | 'head' | 'canal';
@@ -84,6 +90,11 @@ export interface PlanOptions {
   legLengthGoal: Goal;
   /** Offset goal: match the contralateral global offset, or change by a set amount. */
   offsetGoal: Goal;
+  /**
+   * Automatic stem orientation: 'pelvis' = template upright to the
+   * inter-teardrop line; 'canal' = along the femoral anatomical axis.
+   */
+  stemAlignment: 'pelvis' | 'canal';
   /** Manual overrides (null = automatic). */
   cupSizeOverride: number | null;
   stemSizeOverride: string | null;
@@ -103,6 +114,7 @@ export const DEFAULT_OPTIONS: PlanOptions = {
   cupPlacement: 'teardrop',
   legLengthGoal: { mode: 'match', mm: 0 },
   offsetGoal: { mode: 'match', mm: 0 },
+  stemAlignment: 'pelvis',
   cupSizeOverride: null,
   stemSizeOverride: null,
   offsetOverride: null,

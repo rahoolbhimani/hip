@@ -121,22 +121,27 @@ export class Store {
     const op = c.operativeSide;
     const ct = op === 'R' ? 'L' : 'R';
     let proposed = 0;
-    const put = (side: Side, key: LandmarkKey, apply: () => void): void => {
+    const put = (side: Side, key: LandmarkKey, apply: () => void, at: Vec2): void => {
       if (this.statusOf(side, key) === 'confirmed') return;
       apply();
+      const l = this.landmarks(side);
+      l.proposals = { ...(l.proposals ?? {}), [key]: { ...at } };
       this.setStatusOf(side, key, 'proposed');
       proposed++;
     };
     for (const side of [op, ct] as Side[]) {
       const a = res.sides[side];
       const l = this.landmarks(side);
-      if (a.teardrop) put(side, 'teardrop', () => (l.teardrop = a.teardrop));
-      if (a.head) put(side, 'head', () => (l.head = a.head));
-      if (a.lesserTrochanter) put(side, 'lesserTrochanter', () => (l.lesserTrochanter = a.lesserTrochanter));
-      if (a.canalSeeds) put(side, 'canal', () => {
-        l.canalSeeds = a.canalSeeds;
-        this.detectCanal(side);
-      });
+      if (a.teardrop) put(side, 'teardrop', () => (l.teardrop = a.teardrop), a.teardrop);
+      if (a.head) put(side, 'head', () => (l.head = a.head), a.head.center);
+      if (a.lesserTrochanter) put(side, 'lesserTrochanter', () => (l.lesserTrochanter = a.lesserTrochanter), a.lesserTrochanter);
+      if (a.canalSeeds) {
+        const seeds = a.canalSeeds;
+        put(side, 'canal', () => {
+          l.canalSeeds = seeds;
+          this.detectCanal(side);
+        }, seeds[0]);
+      }
     }
     const order: Array<[Side, LandmarkKey]> = [
       [op, 'teardrop'], [ct, 'teardrop'], [op, 'head'], [op, 'lesserTrochanter'], [op, 'canal'],
@@ -218,6 +223,25 @@ export class Store {
       }
     }
     this.endReview(this.unconfirmedCount() ? 'Review done. Skipped points stay marked with "?".' : 'All points confirmed. Drag any implant or point to fine-tune.');
+  }
+
+  /**
+   * Detector error on this film: for every confirmed point that was
+   * auto-proposed, how far (mm) the user moved it before confirming.
+   */
+  detectionErrors(): Array<{ side: Side; key: LandmarkKey; mm: number }> {
+    const mmPerPx = this.state.case.calibration?.mmPerPx;
+    if (!mmPerPx) return [];
+    const out: Array<{ side: Side; key: LandmarkKey; mm: number }> = [];
+    for (const side of ['R', 'L'] as Side[]) {
+      const l = this.landmarks(side);
+      for (const [key, at] of Object.entries(l.proposals ?? {}) as Array<[LandmarkKey, Vec2]>) {
+        if (l.status?.[key] !== 'confirmed') continue;
+        const now = finalPoint(l, key);
+        if (now) out.push({ side, key, mm: Math.hypot(now.x - at.x, now.y - at.y) * mmPerPx });
+      }
+    }
+    return out;
   }
 
   unconfirmedCount(): number {
@@ -467,5 +491,23 @@ export class Store {
     for (const side of ['R', 'L'] as const) {
       if (this.landmarks(side).canalSeeds) this.detectCanal(side);
     }
+  }
+}
+
+/** The point that represents a landmark (same convention as `proposals`). */
+export function finalPoint(l: SideLandmarks, key: LandmarkKey): Vec2 | undefined {
+  switch (key) {
+    case 'head':
+      return l.head?.center;
+    case 'canal':
+      return l.canalSeeds?.[0];
+    case 'teardrop':
+      return l.teardrop;
+    case 'lesserTrochanter':
+      return l.lesserTrochanter;
+    case 'acetabularEdge':
+      return l.acetabularEdge;
+    case 'greaterTrochanter':
+      return l.greaterTrochanter;
   }
 }

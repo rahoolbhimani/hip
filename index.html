@@ -80,7 +80,7 @@
           <label class="check"><input type="checkbox" id="invert" /> Invert</label>
           <div class="layers">
             <label class="check"><input type="checkbox" data-layer="measurements" checked /> Measurements</label>
-            <label class="check"><input type="checkbox" data-layer="canal" checked /> Canal</label>
+            <label class="check"><input type="checkbox" data-layer="canal" /> Canal points</label>
             <label class="check"><input type="checkbox" data-layer="cup" checked /> Cup</label>
             <label class="check"><input type="checkbox" data-layer="stem" checked /> Stem</label>
           </div>
@@ -94,6 +94,11 @@
 
       <section class="viewer" id="viewer">
         <div class="status" id="status"></div>
+        <div class="viewer-tools" role="toolbar" aria-label="Display">
+          <button class="btn small on" id="tg-measure" aria-pressed="true" title="Show or hide all measurements (M)">Measurements</button>
+          <button class="btn small on" id="tg-summary" aria-pressed="true" title="Show or hide the plan summary box">Summary</button>
+          <button class="btn small" id="reset-labels" title="Move all labels and the summary box back">Reset labels</button>
+        </div>
         <div class="review-card" id="review-card" hidden>
           <div class="rc-top"><span class="rc-count" id="rc-count"></span><span class="rc-title" id="rc-title"></span></div>
           <div class="rc-hint" id="rc-hint"></div>
@@ -136,10 +141,17 @@
         <section>
           <h2>Implants</h2>
           <div class="row"><span class="lbl">Stem</span><select id="opt-stem-family"></select></div>
+          <div class="row">
+            <span class="lbl">Stem orientation</span>
+            <select id="opt-align">
+              <option value="pelvis">Upright to teardrop line</option>
+              <option value="canal">Along femoral canal</option>
+            </select>
+          </div>
           <div class="row"><span class="lbl">Stem size</span><select id="ovr-stem"></select></div>
           <div class="row"><span class="lbl">Neck</span><select id="ovr-offset"></select></div>
           <div class="row"><span class="lbl">Stem position</span><span class="val" id="stem-mode">Auto</span><button class="btn small" id="reset-stem">Reset</button></div>
-          <p class="hint">Drag the stem to move it in the canal; drag the dot at its tip to tilt it.</p>
+          <p class="hint">Drag the stem to move it in the canal; drag the dot at its tip to tilt it. Drag any measurement label or the summary box to move it out of the way.</p>
           <div class="row"><span class="lbl">Cup size</span><select id="ovr-cup"></select></div>
           <div class="row"><span class="lbl">Cup inclination</span><input type="range" id="opt-incl" min="30" max="55" step="1" /><span id="opt-incl-val" class="val"></span></div>
           <div class="row">

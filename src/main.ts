@@ -259,6 +259,7 @@ document.addEventListener('keydown', (e) => {
     store.state.pendingClicks = [];
     store.setStatus('Tool cancelled. Drag handles to adjust, or pick a landmark to place.');
   } else if (e.key === 'f') viewer.fit();
+  else if (e.key === 'm' || e.key === 'M') setMeasurementsVisible(!viewer.layers.measurements);
   else if (e.key === 'n' && store.state.image) store.activateStep(store.nextStep());
 });
 
@@ -278,10 +279,27 @@ $('invert').addEventListener('change', (e) => {
 });
 for (const el of document.querySelectorAll<HTMLInputElement>('[data-layer]')) {
   el.addEventListener('change', () => {
+    if (el.dataset.layer === 'measurements') return setMeasurementsVisible(el.checked);
     viewer.layers[el.dataset.layer as keyof typeof viewer.layers] = el.checked;
     viewer.render();
   });
 }
+function setMeasurementsVisible(on: boolean): void {
+  viewer.layers.measurements = on;
+  const cb = document.querySelector<HTMLInputElement>('[data-layer="measurements"]');
+  if (cb) cb.checked = on;
+  $('tg-measure').classList.toggle('on', on);
+  $('tg-measure').setAttribute('aria-pressed', String(on));
+  viewer.render();
+}
+$('tg-measure').addEventListener('click', () => setMeasurementsVisible(!viewer.layers.measurements));
+$('tg-summary').addEventListener('click', () => {
+  viewer.summaryVisible = !viewer.summaryVisible;
+  $('tg-summary').classList.toggle('on', viewer.summaryVisible);
+  $('tg-summary').setAttribute('aria-pressed', String(viewer.summaryVisible));
+  viewer.render();
+});
+$('reset-labels').addEventListener('click', () => viewer.resetLabels());
 $('zoom-fit').addEventListener('click', () => viewer.fit());
 $('zoom-in').addEventListener('click', () => viewer.zoomBy(1.25));
 $('zoom-out').addEventListener('click', () => viewer.zoomBy(0.8));
@@ -313,6 +331,7 @@ function syncControls(): void {
   ($('opt-incl') as HTMLInputElement).value = String(o.cupInclination);
   $('opt-incl-val').textContent = `${o.cupInclination}°`;
   ($('opt-placement') as HTMLSelectElement).value = o.cupPlacement;
+  ($('opt-align') as HTMLSelectElement).value = o.stemAlignment;
   ($('opt-oversize') as HTMLInputElement).value = String(o.cupOversize);
   ($('opt-medial') as HTMLInputElement).value = String(o.cupMedialWallOffset);
   fillSelect('opt-stem-family', lib.stems.map((f): [string, string] => [f.id, f.name]), stem.id);
@@ -358,6 +377,10 @@ bindOption('opt-medial', (el) => (o().cupMedialWallOffset = Number(el.value) || 
 bindOption('ovr-cup', (el) => (o().cupSizeOverride = el.value ? Number(el.value) : null));
 bindOption('ovr-stem', (el) => (o().stemSizeOverride = el.value || null));
 bindOption('ovr-offset', (el) => (o().offsetOverride = el.value || null));
+bindOption('opt-align', (el) => {
+  o().stemAlignment = el.value as 'pelvis' | 'canal';
+  o().stemPose = null;
+});
 bindOption('opt-stem-family', (el) => {
   o().stemFamilyId = el.value;
   o().stemSizeOverride = null;
@@ -469,7 +492,7 @@ store.subscribe((s) => {
   renderReviewCard();
   syncCalibration();
   syncSide();
-  $('results').innerHTML = renderResults(s);
+  $('results').innerHTML = renderResults(s, store.detectionErrors());
   syncPlanState();
 });
 

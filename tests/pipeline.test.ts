@@ -2,10 +2,10 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { generatePhantom, type Phantom } from '../src/imaging/synthetic';
 import { detectFemoralHead, detectCanal } from '../src/imaging/detect';
 import { emptyCase, type CaseData } from '../src/planning/types';
-import { buildPlan, engagementDepth, stemOutlineLocal } from '../src/planning/plan';
+import { buildPlan, engagementDepth, stemOutlineLocal, stemToFemur } from '../src/planning/plan';
 import { measure } from '../src/planning/measure';
 import { DEFAULT_LIBRARY, neckHeadCenter, stemWidthAt, stemLength, parseStemTable } from '../src/planning/implants';
-import { add, scale, signedDistanceToLine } from '../src/geometry/vec';
+import { add, scale, signedDistanceToLine, fromFrame } from '../src/geometry/vec';
 
 let ph: Phantom;
 const px = (p: { x: number; y: number }) => scale(p, 1 / ph.mmPerPx);
@@ -85,6 +85,7 @@ describe('measurements and plan', () => {
 
   it('produces a plan that restores leg length and offset', () => {
     const c = buildCase();
+    c.options.stemAlignment = 'canal';
     const plan = buildPlan(c, DEFAULT_LIBRARY)!;
     expect(plan.missing).toEqual([]);
     expect(plan.cup!.size.outerDiameter).toBeGreaterThanOrEqual(52);
@@ -242,5 +243,29 @@ describe('goals and manual placement', () => {
     c.options.cupCenter = { x: auto.cup!.center.x, y: auto.cup!.center.y + 4 };
     const raised = buildPlan(c, DEFAULT_LIBRARY)!;
     expect(raised.reconstruction!.acetabular.ll).toBeCloseTo(auto.reconstruction!.acetabular.ll - 4, 6);
+  });
+});
+
+describe('template alignment', () => {
+  it('auto stem is upright to the inter-teardrop line by default', () => {
+    const c = buildCase();
+    const plan = buildPlan(c, DEFAULT_LIBRARY)!;
+    const ch = plan.stem!.chosen;
+    // Stem axis direction in image mm vs the pelvic vertical.
+    const fem = plan.femur!;
+    const top = fromFrame(fem, stemToFemur(ch.pose, { x: 0, y: 0 }));
+    const tip = fromFrame(fem, stemToFemur(ch.pose, { x: 0, y: 100 }));
+    const along = { x: tip.x - top.x, y: tip.y - top.y };
+    const u = plan.measurements.pelvis.uAxis;
+    expect(Math.abs(along.x * u.x + along.y * u.y) / Math.hypot(along.x, along.y)).toBeLessThan(0.01);
+    // The phantom shaft is adducted 7°, so the template is tilted ~7° relative to the canal.
+    expect(Math.abs(plan.autoStemTilt!)).toBeCloseTo(7, 0);
+  });
+
+  it('canal alignment keeps the stem on the femoral axis', () => {
+    const c = buildCase();
+    c.options.stemAlignment = 'canal';
+    const plan = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(plan.stem!.chosen.pose.tilt).toBe(0);
   });
 });

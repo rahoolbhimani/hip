@@ -6,7 +6,7 @@ const signed = (v: number | undefined, unit = ' mm'): string => (v === undefined
 const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 const sideName = (s: 'R' | 'L'): string => (s === 'R' ? 'Right' : 'Left');
 
-export function renderResults(s: AppState): string {
+export function renderResults(s: AppState, errors: Array<{ side: 'R' | 'L'; key: string; mm: number }> = []): string {
   const m = s.measurements;
   const p = s.plan;
   if (!s.image) return '<p class="hint">Open an image to begin.</p>';
@@ -84,12 +84,25 @@ export function renderResults(s: AppState): string {
   }
 
   out.push('<h3>Pre-operative measurements</h3><table class="kv">');
-  out.push(row('Leg length difference', m.legLengthDifference === undefined ? '—' : `${Math.abs(m.legLengthDifference).toFixed(1)} mm ${m.legLengthDifference < 0 ? 'short' : m.legLengthDifference > 0 ? 'long' : ''} (op. side)`));
+  out.push(row('Leg length difference', m.legLengthDifference === undefined ? '—' : `${signed(m.legLengthDifference)} <span class="opt">(− = operative leg shorter)</span>`));
+  if (m.op.globalOffset !== undefined && m.contra.globalOffset !== undefined) {
+    out.push(row('Offset difference', `${signed(m.op.globalOffset - m.contra.globalOffset)} <span class="opt">(− = less on operative side)</span>`));
+  }
   out.push(row('Pelvic obliquity', f1(m.obliquity, '°')));
   out.push(row('Inter-teardrop distance', f1(m.interTeardropDistance)));
   out.push('</table>');
   out.push(sideTable('Operative', m.op));
   out.push(sideTable('Contralateral', m.contra));
+
+  if (errors.length) {
+    const names: Record<string, string> = { teardrop: 'Teardrop', head: 'Head centre', lesserTrochanter: 'Lesser trochanter', canal: 'Canal seed', acetabularEdge: 'Acetabular edge', greaterTrochanter: 'Greater trochanter' };
+    out.push('<h3>Auto-detection check</h3><p class="hint">How far you moved each proposed point before confirming it: the detector\'s error on this film.</p><table class="kv">');
+    for (const e of errors) {
+      const cls = e.mm <= 2 ? 'delta-ok' : 'delta-warn';
+      out.push(row(`${names[e.key] ?? e.key} (${e.side})`, `<span class="${cls}">${e.mm.toFixed(1)} mm</span>`));
+    }
+    out.push('</table>');
+  }
 
   const warnings = [...(p?.warnings ?? m.warnings)];
   for (const w of warnings) out.push(`<div class="warn">${esc(w)}</div>`);
@@ -104,7 +117,7 @@ function sideTable(title: string, sm: SideMeasurements): string {
     ${row('Acetabular offset', f1(sm.acetabularOffset))}
     ${row('Femoral offset', f1(sm.femoralOffset))}
     ${row('Global offset', f1(sm.globalOffset))}
-    ${row('LT below teardrop line', f1(sm.ltBelowLine))}
+    ${row('Teardrop → LT height', f1(sm.ltBelowLine))}
     ${row('Canal isthmus width', f1(sm.canalIsthmusWidth))}
     ${row('Femoral shaft angle', f1(sm.femoralAxisAngle, '°'))}
   </table>`;
