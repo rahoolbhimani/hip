@@ -53,7 +53,10 @@ export interface CupPlan {
   /** Rim endpoints in the pelvic frame (mm). */
   inferomedialRim: Vec2;
   superolateralRim: Vec2;
+  /** Prosthetic femoral head diameter (mm). */
   bearingDiameter: number;
+  /** The requested head was larger than this cup accepts. */
+  headClamped?: boolean;
   /** Lateral uncovered rim beyond the acetabular edge, mm (only when the edge was marked). */
   lateralUncoverage?: number;
   manual: boolean;
@@ -188,6 +191,9 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   const cupFamily = lib.cups.find((f) => f.id === o.cupFamilyId) ?? lib.cups[0];
   if (opL.head && opL.teardrop && cupFamily) {
     result.cup = planCup(c, m, cupFamily, toFrame(m.pelvis, toMm(opL.teardrop, mmPerPx)), opL.acetabularEdge ? toFrame(m.pelvis, toMm(opL.acetabularEdge, mmPerPx)) : undefined);
+    if (result.cup.headClamped) {
+      warnings.push(`A ${o.headDiameter} mm head does not fit a ${result.cup.size.outerDiameter} mm cup; using ${result.cup.bearingDiameter} mm.`);
+    }
     if (result.cup.size.outerDiameter !== result.cup.autoSize && o.cupSizeOverride === null) {
       warnings.push(`Cup size clamped to library range (${result.cup.size.outerDiameter} mm).`);
     }
@@ -398,7 +404,8 @@ export function planCup(
     inclination: o.cupInclination,
     inferomedialRim,
     superolateralRim,
-    bearingDiameter: size.maxHeadDiameter,
+    bearingDiameter: o.headDiameter !== null ? Math.min(o.headDiameter, size.maxHeadDiameter) : size.maxHeadDiameter,
+    headClamped: o.headDiameter !== null && o.headDiameter > size.maxHeadDiameter,
     lateralUncoverage: acetabularEdge ? superolateralRim.x - acetabularEdge.x : undefined,
     manual: !!o.cupCenter,
   };

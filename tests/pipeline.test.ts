@@ -275,3 +275,30 @@ describe('template alignment', () => {
     expect(plan.stem!.chosen.pose.tilt).toBe(0);
   });
 });
+
+describe('heads and necks', () => {
+  it('uses the chosen head size, clamped to the cup', () => {
+    const c = buildCase();
+    c.options.headDiameter = 32;
+    expect(buildPlan(c, DEFAULT_LIBRARY)!.cup!.bearingDiameter).toBe(32);
+    c.options.headDiameter = 40;
+    c.options.cupSizeOverride = 48; // takes at most a 32 mm head
+    const p = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(p.cup!.bearingDiameter).toBe(32);
+    expect(p.warnings.some((w) => w.includes('does not fit'))).toBe(true);
+  });
+
+  it('can force the CATALYSTEM high-offset neck: +offset, same leg length as standard', () => {
+    const c = buildCase();
+    const std = buildPlan(c, DEFAULT_LIBRARY)!;
+    c.options.stemSizeOverride = std.stem!.chosen.size.size;
+    c.options.offsetOverride = 'std';
+    const s = buildPlan(c, DEFAULT_LIBRARY)!;
+    c.options.offsetOverride = 'high';
+    const h = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(h.stem!.chosen.offset.id).toBe('high');
+    const gain = h.stem!.chosen.offset.offset - s.stem!.chosen.offset.offset;
+    expect(gain).toBeGreaterThanOrEqual(6);
+    expect(h.reconstruction!.total.off - s.reconstruction!.total.off).toBeCloseTo(gain, 0);
+  });
+});

@@ -133,6 +133,16 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: AppState, k: numbe
       // Native head: thin outline, native centre as a small cross.
       circle(ctx, l.head.center, l.head.radius, C.head, (isOp ? 1.2 : 1) * k, isOp ? [] : [5 * k, 4 * k]);
       cross(ctx, l.head.center, 5 * k, C.head, 1.2 * k);
+      // Edge handle: drag to resize the native head circle.
+      ctx.save();
+      ctx.fillStyle = C.head;
+      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+      ctx.lineWidth = 1 * k;
+      ctx.beginPath();
+      ctx.rect(l.head.center.x + l.head.radius - 4 * k, l.head.center.y - 4 * k, 8 * k, 8 * k);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
       if (mmPerPx && showM) mlabel(`head-${side}`, add(l.head.center, { x: -l.head.radius * 0.7, y: -l.head.radius * 0.7 }), `Ø ${(2 * l.head.radius * mmPerPx).toFixed(1)}`, C.head, { x: -60, y: -10 });
     }
     const reviewingCanal = s.review?.items[s.review.index]?.kind === 'landmark' && (s.review.items[s.review.index] as { side: string; key: string }).side === side && (s.review.items[s.review.index] as { key: string }).key === 'canal';

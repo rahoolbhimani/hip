@@ -99,6 +99,8 @@ export interface PlanOptions {
   cupSizeOverride: number | null;
   stemSizeOverride: string | null;
   offsetOverride: string | null;
+  /** Prosthetic femoral head diameter (mm); null = largest the cup accepts. */
+  headDiameter: number | null;
   /** Manual stem position; null = automatic fit-and-fill seating. */
   stemPose: StemPose | null;
   /** Manual cup centre in the pelvic frame (mm); null = automatic placement. */
@@ -118,6 +120,7 @@ export const DEFAULT_OPTIONS: PlanOptions = {
   cupSizeOverride: null,
   stemSizeOverride: null,
   offsetOverride: null,
+  headDiameter: null,
   stemPose: null,
   cupCenter: null,
 };

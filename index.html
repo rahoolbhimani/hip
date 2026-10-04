@@ -103,6 +103,12 @@
         <div class="review-card" id="review-card" hidden>
           <div class="rc-top"><span class="rc-count" id="rc-count"></span><span class="rc-title" id="rc-title"></span></div>
           <div class="rc-hint" id="rc-hint"></div>
+          <div class="rc-size" id="rc-head" hidden>
+            <span class="lbl">Head diameter</span>
+            <button class="btn small" id="rc-head-minus" title="Smaller ( [ )">−</button>
+            <span class="rc-size-val" id="rc-head-val"></span>
+            <button class="btn small" id="rc-head-plus" title="Larger ( ] )">+</button>
+          </div>
           <div class="rc-actions">
             <button class="btn primary" id="rc-ok">OK <kbd>Enter</kbd></button>
             <button class="btn" id="rc-skip">Skip</button>
@@ -150,7 +156,24 @@
             </select>
           </div>
           <div class="row"><span class="lbl">Stem size</span><select id="ovr-stem"></select></div>
-          <div class="row"><span class="lbl">Neck</span><select id="ovr-offset"></select></div>
+          <div class="row">
+            <span class="lbl">Neck offset</span>
+            <div class="seg" id="neck-seg" role="group" aria-label="Neck offset">
+              <button data-neck="">Auto</button>
+              <button data-neck="std">Standard</button>
+              <button data-neck="high">High</button>
+            </div>
+          </div>
+          <div class="row">
+            <span class="lbl">Femoral head</span>
+            <select id="opt-head">
+              <option value="">Auto (largest for cup)</option>
+              <option value="28">28 mm</option>
+              <option value="32">32 mm</option>
+              <option value="36">36 mm</option>
+              <option value="40">40 mm</option>
+            </select>
+          </div>
           <div class="row"><span class="lbl">Stem position</span><span class="val" id="stem-mode">Auto</span><button class="btn small" id="reset-stem">Reset</button></div>
           <p class="hint">Drag the stem to move it in the canal; drag the dot at its tip to tilt it. Drag any measurement label or the summary box to move it out of the way.</p>
           <div class="row"><span class="lbl">Cup size</span><select id="ovr-cup"></select></div>

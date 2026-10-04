@@ -235,3 +235,7 @@ h3 { font-size: 12px; margin: 12px 0 4px; color: var(--text); }
 .steps li.proposed .dot { border-color: var(--warn); color: var(--warn); background: transparent; }
 .steps li.reviewing { border-color: var(--warn); background: rgba(255, 190, 11, 0.08); }
 .btn:focus-visible, .steps li:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+
+.rc-size { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; }
+.rc-size .lbl { color: var(--muted); font-size: 12px; margin-right: 4px; }
+.rc-size-val { min-width: 64px; text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }

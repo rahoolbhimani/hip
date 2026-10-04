@@ -199,6 +199,20 @@ const REVIEW_TEXT: Record<LandmarkKey, [string, string]> = {
   greaterTrochanter: ['Greater trochanter', 'Tip of the greater trochanter.'],
 };
 
+function reviewedHeadSide(): Side | null {
+  const it = store.currentReviewItem();
+  return it?.kind === 'landmark' && it.key === 'head' ? it.side : null;
+}
+
+function resizeReviewedHead(deltaMm: number): void {
+  const side = reviewedHeadSide();
+  const head = side ? store.landmarks(side).head : undefined;
+  const mmPerPx = store.state.case.calibration?.mmPerPx;
+  if (!head || !mmPerPx) return;
+  head.radius = Math.max(5 / mmPerPx, head.radius + deltaMm / 2 / mmPerPx);
+  store.recompute();
+}
+
 function renderReviewCard(): void {
   const r = store.state.review;
   const item = store.currentReviewItem();
@@ -207,6 +221,13 @@ function renderReviewCard(): void {
   if (!r || !item) return;
   const left = store.unconfirmedCount();
   $('rc-count').textContent = `${left} to check`;
+  const headSide = reviewedHeadSide();
+  $('rc-head').hidden = !headSide;
+  if (headSide) {
+    const head = store.landmarks(headSide).head;
+    const mmPerPx = store.state.case.calibration?.mmPerPx;
+    $('rc-head-val').textContent = head && mmPerPx ? `Ø ${(2 * head.radius * mmPerPx).toFixed(1)} mm` : '—';
+  }
   if (item.kind === 'marker') {
     const cal = store.state.case.calibration;
     $('rc-title').textContent = `Calibration marker (${cal?.markerDiameterMm ?? 25} mm)`;
@@ -220,6 +241,8 @@ function renderReviewCard(): void {
 }
 
 $('rc-ok').addEventListener('click', () => store.reviewOK());
+$('rc-head-minus').addEventListener('click', () => resizeReviewedHead(-0.5));
+$('rc-head-plus').addEventListener('click', () => resizeReviewedHead(0.5));
 $('rc-skip').addEventListener('click', () => store.reviewSkip());
 $('rc-all').addEventListener('click', () => store.reviewOKAll());
 $('rc-stop').addEventListener('click', () => store.endReview());
@@ -248,6 +271,10 @@ document.addEventListener('keydown', (e) => {
   if (store.state.review && e.key === 'Enter') {
     e.preventDefault();
     store.reviewOK();
+    return;
+  }
+  if (store.state.review && (e.key === '[' || e.key === ']')) {
+    resizeReviewedHead(e.key === '[' ? -0.5 : 0.5);
     return;
   }
   if (e.key === 'Escape' && store.state.review) {
@@ -341,8 +368,7 @@ function syncControls(): void {
   fillSelect('opt-stem-family', lib.stems.map((f): [string, string] => [f.id, f.name]), stem.id);
   fillSelect('ovr-cup', [['', 'Auto'], ...cup.sizes.map((z): [string, string] => [String(z.outerDiameter), `${z.outerDiameter} mm`])], o.cupSizeOverride === null ? '' : String(o.cupSizeOverride));
   fillSelect('ovr-stem', [['', 'Auto'], ...stem.sizes.map((z): [string, string] => [z.size, `Size ${z.size}`])], o.stemSizeOverride ?? '');
-  const offs = stem.sizes[0].offsets;
-  fillSelect('ovr-offset', [['', 'Auto'], ...offs.map((z): [string, string] => [z.id, z.label])], o.offsetOverride ?? '');
+  ($('opt-head') as HTMLSelectElement).value = o.headDiameter === null ? '' : String(o.headDiameter);
   syncSide();
 }
 
@@ -350,7 +376,14 @@ function syncControls(): void {
 function syncPlanState(): void {
   const o = store.state.case.options;
   ($('ovr-stem') as HTMLSelectElement).value = o.stemSizeOverride ?? '';
-  ($('ovr-offset') as HTMLSelectElement).value = o.offsetOverride ?? '';
+  const chosenNeck = store.state.plan?.stem?.chosen.offset.id;
+  for (const b of $('neck-seg').querySelectorAll<HTMLButtonElement>('button')) {
+    const v = b.dataset.neck ?? '';
+    b.classList.toggle('on', v === (o.offsetOverride ?? ''));
+    // In auto mode, hint which neck the planner picked.
+    b.title = !o.offsetOverride && v === chosenNeck ? 'Chosen automatically' : '';
+    b.style.outline = !o.offsetOverride && v === chosenNeck ? '1px dashed var(--accent)' : '';
+  }
   $('stem-mode').textContent = o.stemPose ? 'Manual' : 'Auto';
   $('cup-mode').textContent = o.cupCenter ? 'Manual' : 'Auto';
   ($('reset-stem') as HTMLButtonElement).disabled = !o.stemPose && !o.stemSizeOverride && !o.offsetOverride;
@@ -380,7 +413,13 @@ bindOption('opt-oversize', (el) => (o().cupOversize = Number(el.value) || 0));
 bindOption('opt-medial', (el) => (o().cupMedialWallOffset = Number(el.value) || 0));
 bindOption('ovr-cup', (el) => (o().cupSizeOverride = el.value ? Number(el.value) : null));
 bindOption('ovr-stem', (el) => (o().stemSizeOverride = el.value || null));
-bindOption('ovr-offset', (el) => (o().offsetOverride = el.value || null));
+bindOption('opt-head', (el) => (o().headDiameter = el.value ? Number(el.value) : null));
+$('neck-seg').addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest('button');
+  if (!b) return;
+  o().offsetOverride = b.dataset.neck || null;
+  store.recompute();
+});
 bindOption('opt-align', (el) => {
   o().stemAlignment = el.value as 'pelvis' | 'canal';
   o().stemPose = null;
@@ -491,7 +530,7 @@ $('load-library').addEventListener('change', async (e) => {
 
 store.subscribe((s) => {
   $('status').textContent = s.status;
-  $('status').hidden = !s.status;
+  $('status').hidden = !s.status || !!s.review;
   renderSteps();
   renderReviewCard();
   syncCalibration();

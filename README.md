@@ -27,7 +27,8 @@ Click **Demo case** to load a synthetic radiograph (a left THA with the operativ
    - **Leg length**: equal to the other side (plus any extra), or change by a set number of mm.
    - **Offset**: match the other side (plus any extra), or change by a set number of mm.
 6. **Implants.** The app picks the stem size, standard or high-offset neck, seating depth and cup position that best meet the goals, always with the 0 mm head. You can override any of these:
-   - force a stem size or neck
+   - force a stem size, or the neck offset with the **Auto / Standard / High** switch (in Auto, the neck the planner picked is outlined)
+   - choose the prosthetic **femoral head** size (28–40 mm, limited by what the cup accepts)
    - **drag the stem** to move it in the canal, or drag the dot at its tip to tilt it
    - **drag the cup centre** to move the cup
    - **Reset** returns the stem or cup to automatic placement
@@ -38,6 +39,8 @@ Click **Demo case** to load a synthetic radiograph (a left THA with the operativ
    - **Measurements:** in red and cyan. LLD is the height from the teardrop line to each lesser trochanter (A = affected side, NA = non-affected side).
    - **Clutter:** drag any label or the summary box out of the way. `M` or the **Measurements** button hides all measurements, and **Reset labels** puts everything back.
 8. **Export**: **Download JPEG** saves the templated radiograph at full resolution, including the summary box and legend. You can also save or load the case as JSON.
+
+While reviewing a femoral head, use the − / + buttons on the review card (or `[` and `]`) to resize the detected circle in 0.5 mm steps, or drag its square edge handle.
 
 Keyboard shortcuts: Enter confirms the point under review, `Esc` stops the review or cancels the current tool, `M` toggles measurements, `f` fits the image to the view.
 

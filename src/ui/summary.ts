@@ -35,6 +35,7 @@ export function summaryRows(s: AppState): SummaryRow[] {
   return [
     { label: 'Cup size', value: p?.cup ? `${p.cup.size.outerDiameter} mm` : '—' },
     { label: 'Stem size', value: stem },
+    { label: 'Head', value: p?.cup && p.stem ? `${p.cup.bearingDiameter} mm, +0` : '—' },
     { label: 'Pre-op LLD', value: signed(m?.legLengthDifference) },
     { label: 'Pre-op offset', value: signed(preOff) },
     { label: 'Post-op LLD', value: signed(postLLD), state: judge(postLLD, 2) },
@@ -79,7 +80,7 @@ export function drawSummary(ctx: CanvasRenderingContext2D, s: AppState, cx: numb
 
   rows.forEach((r, i) => {
     const ry = y + pad + titleH + i * rowH + rowH / 2;
-    if (i === 2 || i === 4) {
+    if (i === 3 || i === 5) {
       ctx.strokeStyle = 'rgba(139,152,168,0.25)';
       ctx.lineWidth = u;
       ctx.beginPath();
@@ -125,7 +126,7 @@ export function drawLegend(
     const ch = p.stem.chosen;
     lines.push([`${p.stem.family.name.replace(/\s*\(.*\)$/, '')} ${ch.offset.id === 'high' ? 'High' : 'Std'} Offset (${side})`, colors.stem]);
     lines.push([`Size: ${ch.size.size}`, colors.stem]);
-    lines.push(['Head: +0', colors.stem]);
+    lines.push([`Head: ${p.cup?.bearingDiameter ?? '—'} mm, +0`, colors.stem]);
   }
   ctx.save();
   ctx.font = `700 ${15 * u}px system-ui, sans-serif`;

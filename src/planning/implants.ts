@@ -88,6 +88,9 @@ export interface CupFamily {
   sizes: CupSize[];
 }
 
+/** Prosthetic femoral head diameters offered (mm). */
+export const HEAD_DIAMETERS = [28, 32, 36, 40];
+
 export interface ImplantLibrary {
   stems: StemFamily[];
   cups: CupFamily[];
@@ -253,7 +256,7 @@ export function specsToTable(specs: StemSizeSpec[]): string {
 function genericShell(): CupFamily {
   const sizes: CupSize[] = [];
   for (let od = 44; od <= 66; od += 2) {
-    sizes.push({ outerDiameter: od, maxHeadDiameter: od <= 46 ? 28 : od <= 50 ? 32 : 36 });
+    sizes.push({ outerDiameter: od, maxHeadDiameter: od <= 46 ? 28 : od <= 50 ? 32 : od <= 54 ? 36 : 40 });
   }
   return {
     id: 'generic-hemi-shell',
