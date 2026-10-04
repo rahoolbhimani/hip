@@ -16,6 +16,7 @@
  * The femoral anatomical axis is assumed parallel to the pelvic vertical when
  * combining the two contributions (cos error < 1% for typical 5–8° axes).
  */
+import { median } from '../geometry/fit';
 import { type Vec2, type Frame, add, scale, sub, dot, perp, fromFrame, toFrame, rad } from '../geometry/vec';
 import {
   type ImplantLibrary,
@@ -67,6 +68,8 @@ export interface StemCandidate {
   score: number;
   /** Stem fills beyond the detected canal (canal extrapolated). */
   beyondCanalData: boolean;
+  /** Seats with the neck cut between the LT and the femoral head. */
+  plausibleSeat: boolean;
 }
 
 export interface FillSample {
@@ -103,6 +106,11 @@ export interface PlanResult {
 }
 
 const ENGAGE_TOLERANCE_MM = 0.5;
+const SIDE_TOLERANCE_MM = 2;
+/** Upper limit for the medial neck cut above the LT when the head does not constrain it further. */
+const DEFAULT_MAX_RESECTION_MM = 30;
+/** The medial cut may sit at most this far below the LT (deep cuts are rejected). */
+const MIN_RESECTION_MM = 0;
 /** Stem levels (mm below the resection) that are checked for cortical contact. */
 const MIN_ENGAGE_STEM_LEVEL = 20;
 /** Femoral levels (mm below the LT) from which the canal profile is trusted. */
@@ -173,10 +181,15 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   const corShift = sub(result.cup.center, m.op.headCenter); // pelvic frame: u lateral, v superior
   result.corShift = corShift;
 
+  // The medial neck cut must lie below the femoral head: at most the height
+  // of the head's inferior margin above the LT.
+  const headRadiusMm = opL.head.radius * mmPerPx;
+  const maxResection = Math.max(5, Math.min(DEFAULT_MAX_RESECTION_MM, -nativeHeadF.y - headRadiusMm));
+
   const candidates: StemCandidate[] = [];
   const sizes = o.stemSizeOverride ? stemFamily.sizes.filter((s) => s.size === o.stemSizeOverride) : stemFamily.sizes;
   for (const size of sizes) {
-    const engage = engagementDepth(size, profile);
+    const engage = engagementDepth(size, profile, maxResection);
     const offsets = o.offsetOverride ? size.offsets.filter((x) => x.id === o.offsetOverride) : size.offsets;
     const heads = o.headLengthOverride !== null ? [o.headLengthOverride] : stemFamily.headLengths;
     for (const offset of offsets) {
@@ -190,8 +203,8 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
         const resectionAbove = -engage.depth;
         let score = (legLengthChange - targetLL) ** 2 + 0.5 * (offsetChange - targetOffset) ** 2;
         score += Math.abs(headLength) / 3.5; // prefer the neutral head
-        if (resectionAbove < 3) score += 10 * (3 - resectionAbove) ** 2;
-        if (resectionAbove > 25) score += (resectionAbove - 25) ** 2;
+        if (resectionAbove < 5) score += 2 * (5 - resectionAbove) ** 2;
+        if (resectionAbove > 20) score += 0.5 * (resectionAbove - 20) ** 2;
         if (engage.beyondData) score += 4;
         candidates.push({
           size,
@@ -203,6 +216,7 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
           offsetChange,
           score,
           beyondCanalData: engage.beyondData,
+          plausibleSeat: !engage.tooLarge && resectionAbove >= MIN_RESECTION_MM,
         });
       }
     }
@@ -212,7 +226,16 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
     return result;
   }
   candidates.sort((a, b) => a.score - b.score);
-  const chosen = candidates[0];
+  const plausible = candidates.filter((x) => x.plausibleSeat);
+  const pool = plausible.length ? plausible : candidates;
+  const chosen = pool[0];
+  if (!chosen.plausibleSeat) {
+    warnings.push(
+      o.stemSizeOverride
+        ? `Stem size ${o.stemSizeOverride} cannot seat with the neck cut between the lesser trochanter and the head — choose another size.`
+        : 'No stem size seats with the neck cut between the lesser trochanter and the head. The detected canal is probably too narrow: check the green canal points and move the canal seeds into the medullary canal.',
+    );
+  }
   const fill: FillSample[] = [];
   const len = stemLength(chosen.size);
   for (const ds of [10, 20, 40, 60, 80, len - 10]) {
@@ -229,7 +252,7 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
     chosen,
     resectionAboveLT: -chosen.seatDepth,
     fill,
-    alternatives: uniqueBySize(candidates).slice(1, 4),
+    alternatives: uniqueBySize(pool).slice(1, 4),
   };
   result.predictedLegLengthChange = chosen.legLengthChange;
   result.predictedOffsetChange = chosen.offsetChange;
@@ -314,7 +337,13 @@ export function canalProfile(c: CaseData, femur: Frame): CanalProfileSample[] {
       return { d: ctr.y, medial: Math.max(a.x, b.x), lateral: -Math.min(a.x, b.x) };
     })
     .filter((s) => s.medial > 0 && s.lateral > 0)
-    .sort((p, q) => p.d - q.d);
+    .sort((p, q) => p.d - q.d)
+    .map((s, i, all) => {
+      // Running median over 5 levels: one falsely narrow level (trabecular
+      // edge, overlapping shadow) must not block every stem size.
+      const win = all.slice(Math.max(0, i - 2), i + 3);
+      return { d: s.d, medial: median(win.map((w) => w.medial)), lateral: median(win.map((w) => w.lateral)) };
+    });
 }
 
 /** Interpolated canal half-widths at femoral depth d; null above the detected range. */
@@ -337,8 +366,16 @@ export function canalAt(profile: CanalProfileSample[], d: number): { medial: num
  * Deepest seat (resection level depth relative to the LT, mm) at which the
  * stem does not breach the endosteal cortex in the meta-diaphyseal region —
  * i.e. where a tapered wedge would lock.
+ *
+ * The search starts at the highest anatomically possible resection
+ * (`maxResectionAboveLT`, below the femoral head). If the stem already
+ * breaches the canal there it is too large for this femur (`tooLarge`).
  */
-export function engagementDepth(size: StemSize, profile: CanalProfileSample[]): { depth: number; beyondData: boolean } {
+export function engagementDepth(
+  size: StemSize,
+  profile: CanalProfileSample[],
+  maxResectionAboveLT = DEFAULT_MAX_RESECTION_MM,
+): { depth: number; beyondData: boolean; tooLarge: boolean } {
   const len = stemLength(size);
   const lastD = profile[profile.length - 1].d;
   const fits = (depth: number): boolean => {
@@ -349,16 +386,17 @@ export function engagementDepth(size: StemSize, profile: CanalProfileSample[]): 
       const w = stemWidthAt(size, ds);
       const cw = canalAt(profile, depth + ds);
       if (!w || !cw) continue;
-      if (w.medial > cw.medial + ENGAGE_TOLERANCE_MM || w.lateral > cw.lateral + ENGAGE_TOLERANCE_MM) return false;
-      // Total width check guards against axis misregistration.
+      // Total mediolateral width is the primary criterion; the per-side check
+      // is looser because it depends on the fitted axis position.
       if (w.medial + w.lateral > cw.medial + cw.lateral + ENGAGE_TOLERANCE_MM) return false;
+      if (w.medial > cw.medial + SIDE_TOLERANCE_MM || w.lateral > cw.lateral + SIDE_TOLERANCE_MM) return false;
     }
     return true;
   };
-  let depth = -40;
-  if (!fits(depth)) return { depth, beyondData: false };
+  let depth = -maxResectionAboveLT;
+  if (!fits(depth)) return { depth, beyondData: false, tooLarge: true };
   while (depth < 60 && fits(depth + 0.5)) depth += 0.5;
-  return { depth, beyondData: depth + len > lastD };
+  return { depth, beyondData: depth + len > lastD, tooLarge: false };
 }
 
 /** Stem outline polygon in the femoral frame (mm) for drawing. */

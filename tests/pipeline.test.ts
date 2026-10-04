@@ -115,7 +115,7 @@ describe('stem mechanics', () => {
   it('bigger stems seat higher in a tapering canal', () => {
     const profile = Array.from({ length: 60 }, (_, i) => {
       const d = -20 + i * 4;
-      const half = 16 - 9 * Math.min(1, Math.max(0, (d + 10) / 150));
+      const half = 16 - 10 * Math.min(1, Math.max(0, (d + 10) / 150));
       return { d, medial: half, lateral: half };
     });
     const sizes = DEFAULT_LIBRARY.stems[0].sizes;
@@ -131,5 +131,53 @@ describe('stem mechanics', () => {
     expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeCloseTo(7);
     expect(b.x).toBeGreaterThan(a.x);
     expect(b.y).toBeLessThan(a.y);
+  });
+});
+
+describe('stem seating stays anatomical', () => {
+  const headCutLimit = (plan: NonNullable<ReturnType<typeof buildPlan>>) => {
+    const m = plan.measurements.op;
+    // Head centre height above the LT along the pelvic vertical, minus the head radius.
+    return m.ltBelowLine! + m.corHeight! - m.headDiameter! / 2;
+  };
+
+  it('a single falsely narrow canal level does not push the stem up', () => {
+    const c = buildCase();
+    const base = buildPlan(c, DEFAULT_LIBRARY)!;
+    const canal = c.landmarks.L.canal!;
+    // Collapse one level 30 mm below the LT to a 4 mm canal.
+    const i = canal.levels.findIndex((l) => l.t * ph.mmPerPx > 30);
+    const lev = canal.levels[i];
+    const mid = scale(add(lev.medialEndosteal, lev.lateralEndosteal), 0.5);
+    const half = 2 / ph.mmPerPx;
+    const dir = scale(add(lev.lateralEndosteal, scale(lev.medialEndosteal, -1)), 1 / lev.canalWidth);
+    lev.lateralEndosteal = add(mid, scale(dir, half));
+    lev.medialEndosteal = add(mid, scale(dir, -half));
+    const plan = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(plan.stem!.chosen.size.size).toBe(base.stem!.chosen.size.size);
+    expect(Math.abs(plan.stem!.resectionAboveLT - base.stem!.resectionAboveLT)).toBeLessThan(2);
+  });
+
+  it('never places the neck cut above the femoral head, even when the canal looks too narrow', () => {
+    const c = buildCase();
+    for (const lev of c.landmarks.L.canal!.levels) {
+      const mid = scale(add(lev.medialEndosteal, lev.lateralEndosteal), 0.5);
+      lev.medialEndosteal = add(mid, scale(add(lev.medialEndosteal, scale(mid, -1)), 0.3));
+      lev.lateralEndosteal = add(mid, scale(add(lev.lateralEndosteal, scale(mid, -1)), 0.3));
+    }
+    const plan = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(plan.stem!.resectionAboveLT).toBeLessThanOrEqual(headCutLimit(plan) + 1);
+    expect(plan.stem!.resectionAboveLT).toBeLessThanOrEqual(30);
+    expect(plan.warnings.some((w) => w.includes('canal is probably too narrow'))).toBe(true);
+  });
+
+  it('keeps the neck cut between the LT and the head for every automatic plan', () => {
+    for (const lld of [0, 6, 12]) {
+      ph = generatePhantom({ mmPerPx: 0.4, noise: 3, lldMm: lld });
+      const plan = buildPlan(buildCase(), DEFAULT_LIBRARY)!;
+      expect(plan.stem!.resectionAboveLT).toBeGreaterThanOrEqual(0);
+      expect(plan.stem!.resectionAboveLT).toBeLessThanOrEqual(headCutLimit(plan));
+    }
+    ph = generatePhantom({ mmPerPx: 0.4, noise: 3, lldMm: 6 });
   });
 });
