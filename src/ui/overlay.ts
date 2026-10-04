@@ -5,7 +5,8 @@
  */
 import { type Vec2, type Frame, fromFrame, scale, add, sub, norm, perp, rad } from '../geometry/vec';
 import type { AppState } from '../app/store';
-import { stemOutline, neckCutLine, stemHeadCenter } from '../planning/plan';
+import { stemOutlineLocal, neckCutLocal, stemToFemur } from '../planning/plan';
+import { neckHeadCenter } from '../planning/implants';
 import { otherSide } from '../planning/types';
 
 export interface Layers {
@@ -25,6 +26,8 @@ const C = {
   cut: '#ffbe0b',
   pending: '#ffffff',
   head: '#f4a261',
+  ghost: '#9ef01a',
+  proposed: '#ffbe0b',
 };
 
 export function drawOverlay(ctx: CanvasRenderingContext2D, s: AppState, k: number, layers: Layers): void {
@@ -137,11 +140,11 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: AppState, k: numbe
   if (layers.stem && plan?.stem && plan.femur && mmPerPx) {
     const fem = plan.femur;
     const ch = plan.stem.chosen;
-    const toImg = (q: Vec2): Vec2 => toPx(fromFrame(fem, q));
-    const outline = stemOutline(ch.size, ch.offset, ch.headLength, ch.seatDepth).map(toImg);
+    const toImg = (q: Vec2): Vec2 => toPx(fromFrame(fem, stemToFemur(ch.pose, q)));
+    const outline = stemOutlineLocal(ch.size, ch.offset).map(toImg);
     ctx.save();
     ctx.strokeStyle = C.stem;
-    ctx.fillStyle = 'rgba(199,125,255,0.15)';
+    ctx.fillStyle = 'rgba(199,125,255,0.16)';
     ctx.lineWidth = 2 * k;
     ctx.beginPath();
     outline.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
@@ -149,24 +152,78 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: AppState, k: numbe
     ctx.fill();
     ctx.stroke();
     ctx.restore();
-    // Prosthetic head
-    const hc = toImg(ch.headCenter);
-    const neckBase = toImg(stemHeadCenter(ch.offset, -12, ch.seatDepth));
-    line(ctx, neckBase, hc, C.stem, 2 * k);
+    // Stem axis
+    const len = ch.size.profile[ch.size.profile.length - 1].d;
+    line(ctx, toImg({ x: 0, y: -10 }), toImg({ x: 0, y: len + 8 }), C.stem, 0.8 * k, [5 * k, 4 * k]);
+    // 0 mm head on the stem
+    const hc = toImg(neckHeadCenter(ch.offset));
     const bearing = plan.cup?.bearingDiameter ?? 32;
     circle(ctx, hc, bearing / 2 / mmPerPx, C.stem, 1.5 * k);
     cross(ctx, hc, 6 * k, C.stem, 1.5 * k);
     // Neck cut
-    const [cutA, cutB] = neckCutLine(ch.size, ch.offset, ch.seatDepth).map(toImg);
+    const [cutA, cutB] = neckCutLocal(ch.size, ch.offset).map(toImg);
     line(ctx, cutA, cutB, C.cut, 2 * k, [6 * k, 4 * k]);
-    label(ctx, cutB, `Cut ${plan.stem.resectionAboveLT.toFixed(0)} mm above LT`, C.cut, k);
-    const tip = toImg({ x: 0, y: ch.seatDepth + ch.size.profile[ch.size.profile.length - 1].d });
-    label(ctx, add(tip, { x: 10 * k, y: 0 }), `Stem ${ch.size.size} ${ch.offset.id} ${fmtHead(ch.headLength)}`, C.stem, k);
+    label(ctx, add(cutA, { x: 8 * k, y: 14 * k }), `Cut ${plan.stem.resectionAboveLT.toFixed(0)} mm above LT`, C.cut, k);
+    const tip = toImg({ x: 0, y: len });
+    label(ctx, add(tip, { x: 10 * k, y: 0 }), `${ch.size.size} ${ch.offset.id === 'high' ? 'high offset' : 'standard'}${plan.stem.manual ? ' (manual)' : ''}`, C.stem, k);
+    // Tilt handle marker at the tip
+    ctx.save();
+    ctx.fillStyle = C.stem;
+    ctx.beginPath();
+    ctx.arc(tip.x, tip.y, 5 * k, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
 
-    // Reduction vector: planned head → cup centre (the predicted change).
-    if (plan.cup && s.measurements) {
-      const cupC = toPx(fromFrame(s.measurements.pelvis, plan.cup.center));
-      line(ctx, hc, cupC, '#ffffff', 1 * k, [2 * k, 2 * k]);
+    // Reduction: stem head → cup centre, and where the LT ends up.
+    if (plan.cup && s.measurements && plan.reconstruction) {
+      const pel = s.measurements.pelvis;
+      const cupC = toPx(fromFrame(pel, plan.cup.center));
+      line(ctx, hc, cupC, '#ffffff', 1.2 * k, [2 * k, 2 * k]);
+      const lt = c.landmarks[c.operativeSide].lesserTrochanter;
+      if (lt) {
+        // Translate the LT by the reduction vector T = C − S (pelvic frame).
+        const T = sub(plan.cup.center, plan.reconstruction.stemHead);
+        const ltP = add(toFrameXY(pel, scale(lt, mmPerPx)), T);
+        const ghost = toPx(fromFrame(pel, ltP));
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        point(ctx, ghost, C.ghost, k, 'LT after');
+        ctx.restore();
+        line(ctx, lt, ghost, C.ghost, 1 * k, [2 * k, 3 * k]);
+      }
+    }
+  }
+
+  // Proposed (unconfirmed) points: amber dashed ring; the one under review gets a target.
+  for (const side of ['R', 'L'] as const) {
+    const l = c.landmarks[side];
+    for (const [key, st] of Object.entries(l.status ?? {})) {
+      if (st !== 'proposed') continue;
+      const pts: Vec2[] =
+        key === 'head' && l.head ? [l.head.center]
+        : key === 'canal' && l.canalSeeds ? [...l.canalSeeds]
+        : key === 'teardrop' && l.teardrop ? [l.teardrop]
+        : key === 'lesserTrochanter' && l.lesserTrochanter ? [l.lesserTrochanter]
+        : [];
+      for (const p of pts) circle(ctx, p, 11 * k, C.proposed, 1.5 * k, [3 * k, 3 * k]);
+    }
+  }
+  const cur = s.review ? s.review.items[s.review.index] : null;
+  if (cur) {
+    const l = cur.kind === 'landmark' ? c.landmarks[cur.side] : null;
+    const p =
+      cur.kind === 'marker' ? c.calibration?.marker?.center
+      : cur.key === 'head' ? l?.head?.center
+      : cur.key === 'canal' ? l?.canalSeeds?.[0]
+      : cur.key === 'teardrop' ? l?.teardrop
+      : cur.key === 'lesserTrochanter' ? l?.lesserTrochanter
+      : undefined;
+    if (p) {
+      circle(ctx, p, 20 * k, C.proposed, 2.5 * k);
+      line(ctx, { x: p.x - 34 * k, y: p.y }, { x: p.x - 22 * k, y: p.y }, C.proposed, 2 * k);
+      line(ctx, { x: p.x + 22 * k, y: p.y }, { x: p.x + 34 * k, y: p.y }, C.proposed, 2 * k);
+      line(ctx, { x: p.x, y: p.y - 34 * k }, { x: p.x, y: p.y - 22 * k }, C.proposed, 2 * k);
+      line(ctx, { x: p.x, y: p.y + 22 * k }, { x: p.x, y: p.y + 34 * k }, C.proposed, 2 * k);
     }
   }
 
@@ -185,12 +242,12 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, s: AppState, k: numbe
   }
 }
 
-function fmtHead(h: number): string {
-  return h === 0 ? '+0' : h > 0 ? `+${h}` : `${h}`;
-}
 
 function toFrameX(f: Frame, p: Vec2): number {
   return (p.x - f.origin.x) * f.uAxis.x + (p.y - f.origin.y) * f.uAxis.y;
+}
+function toFrameXY(f: Frame, p: Vec2): Vec2 {
+  return { x: toFrameX(f, p), y: toFrameY(f, p) };
 }
 function toFrameY(f: Frame, p: Vec2): number {
   return (p.x - f.origin.x) * f.vAxis.x + (p.y - f.origin.y) * f.vAxis.y;

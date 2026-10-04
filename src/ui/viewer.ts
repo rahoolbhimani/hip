@@ -2,11 +2,13 @@
  * Pan/zoom canvas viewer with draggable landmark handles.
  */
 import type { Vec2 } from '../geometry/vec';
-import type { Store, AppState } from '../app/store';
+import type { Store, AppState, ReviewItem } from '../app/store';
 import type { GrayImage } from '../imaging/gray';
 import { intensityWindow } from '../imaging/gray';
 import { drawOverlay, type Layers } from './overlay';
-import type { Side } from '../planning/types';
+import type { Side, StemPose } from '../planning/types';
+import { fromFrame, toFrame, scale } from '../geometry/vec';
+import { stemOutlineLocal, stemToFemur } from '../planning/plan';
 
 interface Handle {
   pos: Vec2;
@@ -24,7 +26,14 @@ export class Viewer {
   private zoom = 1;
   private tx = 0;
   private ty = 0;
-  private drag: { kind: 'pan' | 'handle'; start: Vec2; moved: boolean; handle?: Handle; origin?: { tx: number; ty: number } } | null = null;
+  private drag: {
+    kind: 'pan' | 'handle' | 'stem';
+    start: Vec2;
+    moved: boolean;
+    handle?: Handle;
+    origin?: { tx: number; ty: number };
+    stemStart?: { femoral: Vec2; pose: StemPose };
+  } | null = null;
   private hover: Vec2 | null = null;
   layers: Layers = { measurements: true, canal: true, cup: true, stem: true };
   brightness = 0;
@@ -49,7 +58,10 @@ export class Viewer {
     });
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-    store.subscribe(() => this.render());
+    store.subscribe(() => {
+      this.followReview();
+      this.render();
+    });
     this.resize();
   }
 
@@ -72,6 +84,27 @@ export class Viewer {
     this.tx = (w - img.width * this.zoom) / 2;
     this.ty = (h - img.height * this.zoom) / 2;
     this.render();
+  }
+
+  private lastReviewKey = '';
+
+  /** Centre and zoom on the point currently under review. */
+  private followReview(): void {
+    const s = this.store.state;
+    const item = this.store.currentReviewItem();
+    const key = item ? (item.kind === 'marker' ? 'marker' : `${item.side}:${item.key}`) : '';
+    if (key === this.lastReviewKey) return;
+    this.lastReviewKey = key;
+    if (!item || !s.image) return;
+    const target = reviewTarget(s, item);
+    if (!target) return;
+    const mmPerPx = s.case.calibration?.mmPerPx ?? 0.15;
+    const fieldPx = target.fieldMm / mmPerPx;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    this.zoom = Math.min(w, h) / fieldPx;
+    this.tx = w / 2 - target.center.x * this.zoom;
+    this.ty = h * 0.42 - target.center.y * this.zoom;
   }
 
   zoomBy(f: number): void {
@@ -140,6 +173,32 @@ export class Viewer {
         }
       }
     }
+    const plan = s.plan;
+    const mmPerPx = s.case.calibration?.mmPerPx;
+    if (plan?.cup && s.measurements && mmPerPx) {
+      const pel = s.measurements.pelvis;
+      hs.push({
+        pos: scale(fromFrame(pel, plan.cup.center), 1 / mmPerPx),
+        move: (q) => {
+          s.case.options.cupCenter = toFrame(pel, scale(q, mmPerPx));
+          recompute();
+        },
+      });
+    }
+    if (plan?.stem && plan.femur && mmPerPx) {
+      const fem = plan.femur;
+      const ch = plan.stem.chosen;
+      const len = ch.size.profile[ch.size.profile.length - 1].d;
+      hs.push({
+        pos: scale(fromFrame(fem, stemToFemur(ch.pose, { x: 0, y: len })), 1 / mmPerPx),
+        move: (q) => {
+          const f = toFrame(fem, scale(q, mmPerPx));
+          const v = { x: f.x - ch.pose.shift, y: f.y - ch.pose.depth };
+          const tilt = (Math.atan2(-v.x, v.y) * 180) / Math.PI;
+          this.store.setStemPose({ ...ch.pose, tilt: Math.max(-15, Math.min(15, tilt)) }, ch.size.size, ch.offset.id);
+        },
+      });
+    }
     const cal = s.case.calibration;
     if (cal?.marker) {
       const mk = cal.marker;
@@ -170,12 +229,42 @@ export class Viewer {
     return best;
   }
 
+  /** Image px → femoral frame (mm), if a plan with a femur exists. */
+  private femoralPoint(img: Vec2): Vec2 | null {
+    const s = this.store.state;
+    const fem = s.plan?.femur;
+    const mmPerPx = s.case.calibration?.mmPerPx;
+    if (!fem || !mmPerPx) return null;
+    return toFrame(fem, scale(img, mmPerPx));
+  }
+
+  /** If the screen point is inside the stem template, return the drag anchor. */
+  private hitStem(screen: Vec2): { femoral: Vec2; pose: StemPose } | null {
+    const s = this.store.state;
+    const st = s.plan?.stem;
+    const fem = s.plan?.femur;
+    const mmPerPx = s.case.calibration?.mmPerPx;
+    if (!st || !fem || !mmPerPx || !this.layers.stem) return null;
+    const img = this.toImage(screen);
+    const f = toFrame(fem, scale(img, mmPerPx));
+    const poly = stemOutlineLocal(st.chosen.size, st.chosen.offset).map((q) => stemToFemur(st.chosen.pose, q));
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i];
+      const b = poly[j];
+      if (a.y > f.y !== b.y > f.y && f.x < ((b.x - a.x) * (f.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside ? { femoral: f, pose: { ...st.chosen.pose } } : null;
+  }
+
   private onDown(e: PointerEvent): void {
     if (!this.store.state.image) return;
     this.canvas.setPointerCapture(e.pointerId);
     const sp = this.screenPoint(e);
     const handle = e.button === 0 && !this.store.state.activeTool ? this.hitHandle(sp) : null;
+    const stemHit = !handle && e.button === 0 && !this.store.state.activeTool ? this.hitStem(sp) : null;
     if (handle) this.drag = { kind: 'handle', start: sp, moved: false, handle };
+    else if (stemHit) this.drag = { kind: 'stem', start: sp, moved: false, stemStart: stemHit };
     else this.drag = { kind: 'pan', start: sp, moved: false, origin: { tx: this.tx, ty: this.ty } };
   }
 
@@ -183,7 +272,7 @@ export class Viewer {
     const sp = this.screenPoint(e);
     this.hover = this.toImage(sp);
     if (!this.drag) {
-      this.canvas.style.cursor = this.store.state.activeTool ? 'crosshair' : this.hitHandle(sp) ? 'move' : 'grab';
+      this.canvas.style.cursor = this.store.state.activeTool ? 'crosshair' : this.hitHandle(sp) || this.hitStem(sp) ? 'move' : 'grab';
       if (this.store.state.activeTool) this.render();
       return;
     }
@@ -196,6 +285,17 @@ export class Viewer {
       this.ty = this.drag.origin.ty + dy;
       this.canvas.style.cursor = 'grabbing';
       this.render();
+    } else if (this.drag.kind === 'stem' && this.drag.moved && this.drag.stemStart) {
+      const f = this.femoralPoint(this.toImage(sp));
+      const st = this.drag.stemStart;
+      const ch = this.store.state.plan?.stem?.chosen;
+      if (f && ch) {
+        this.store.setStemPose(
+          { depth: st.pose.depth + (f.y - st.femoral.y), shift: st.pose.shift + (f.x - st.femoral.x), tilt: st.pose.tilt },
+          ch.size.size,
+          ch.offset.id,
+        );
+      }
     } else if (this.drag.handle && this.drag.moved) {
       this.drag.handle.move(this.toImage(sp));
     }
@@ -273,8 +373,14 @@ export class Viewer {
     }
   }
 
-  /** Full-resolution export of the image with overlays. */
-  exportPNG(): string | null {
+  /** Full-resolution export of the image with overlays, as a Blob. */
+  exportBlob(type: 'image/png' | 'image/jpeg'): Promise<Blob | null> {
+    const c = this.exportCanvas();
+    if (!c) return Promise.resolve(null);
+    return new Promise((resolve) => c.toBlob((b) => resolve(b), type, 0.92));
+  }
+
+  private exportCanvas(): HTMLCanvasElement | null {
     const s = this.store.state;
     this.ensureBitmap(s);
     if (!this.bitmap) return null;
@@ -284,6 +390,37 @@ export class Viewer {
     const cx = c.getContext('2d')!;
     cx.drawImage(this.bitmap, 0, 0);
     drawOverlay(cx, s, Math.max(1, c.width / 1400), this.layers);
-    return c.toDataURL('image/png');
+    return c;
+  }
+
+  /** Full-resolution export of the image with overlays, as a data URL. */
+  exportImage(type: 'image/png' | 'image/jpeg' = 'image/png'): string | null {
+    return this.exportCanvas()?.toDataURL(type, 0.92) ?? null;
+  }
+
+}
+
+/** Where to look for a review item, and how much of the image to show (mm). */
+export function reviewTarget(s: AppState, item: ReviewItem): { center: Vec2; fieldMm: number } | null {
+  if (item.kind === 'marker') {
+    const m = s.case.calibration?.marker;
+    return m ? { center: m.center, fieldMm: 90 } : null;
+  }
+  const l = s.case.landmarks[item.side];
+  switch (item.key) {
+    case 'head':
+      return l.head ? { center: l.head.center, fieldMm: 130 } : null;
+    case 'canal':
+      return l.canalSeeds
+        ? { center: { x: (l.canalSeeds[0].x + l.canalSeeds[1].x) / 2, y: (l.canalSeeds[0].y + l.canalSeeds[1].y) / 2 }, fieldMm: 210 }
+        : null;
+    case 'teardrop':
+      return l.teardrop ? { center: l.teardrop, fieldMm: 90 } : null;
+    case 'lesserTrochanter':
+      return l.lesserTrochanter ? { center: l.lesserTrochanter, fieldMm: 100 } : null;
+    case 'acetabularEdge':
+      return l.acetabularEdge ? { center: l.acetabularEdge, fieldMm: 90 } : null;
+    case 'greaterTrochanter':
+      return l.greaterTrochanter ? { center: l.greaterTrochanter, fieldMm: 100 } : null;
   }
 }

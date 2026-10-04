@@ -10,6 +10,8 @@ export type CalibrationMethod = 'marker' | 'line' | 'spacing' | 'manual';
 
 export interface Calibration {
   method: CalibrationMethod;
+  /** Proposed automatically (marker found) and not yet confirmed by the user. */
+  proposed?: boolean;
   /** Final scale in millimetres per image pixel (at the plane of the hip). */
   mmPerPx: number;
   /** Marker ball circle in px (method 'marker'). */
@@ -39,6 +41,32 @@ export interface SideLandmarks {
   canalSeeds?: [Vec2, Vec2];
   /** Result of automatic canal detection (cached, derived from seeds). */
   canal?: CanalDetection;
+  /** Review state per landmark: auto-proposed points wait for the user's OK. */
+  status?: Partial<Record<LandmarkKey, LandmarkStatus>>;
+}
+
+export type LandmarkKey = 'teardrop' | 'lesserTrochanter' | 'greaterTrochanter' | 'acetabularEdge' | 'head' | 'canal';
+export type LandmarkStatus = 'proposed' | 'confirmed';
+
+/**
+ * Manual stem placement in the femoral frame: the stem axis origin (resection
+ * level) sits `shift` mm medial of the femoral axis and `depth` mm below the
+ * LT level, rotated `tilt` degrees (positive = varus, tip moving laterally).
+ */
+export interface StemPose {
+  depth: number;
+  shift: number;
+  tilt: number;
+}
+
+/**
+ * A reconstruction goal. 'match' = equal to the contralateral side (plus `mm`
+ * if non-zero); 'change' = change the operative side by `mm` (+ = longer /
+ * more offset).
+ */
+export interface Goal {
+  mode: 'match' | 'change';
+  mm: number;
 }
 
 export interface PlanOptions {
@@ -52,30 +80,34 @@ export interface PlanOptions {
   cupMedialWallOffset: number;
   /** Cup placement strategy. */
   cupPlacement: 'teardrop' | 'native';
-  /** Additional leg-length change requested on top of the LLD correction (mm, + = lengthen). */
-  extraLengthening: number;
-  /** Whether to correct the measured LLD at all. */
-  correctLLD: boolean;
+  /** Leg-length goal: equalise with the contralateral side, or change by a set amount. */
+  legLengthGoal: Goal;
+  /** Offset goal: match the contralateral global offset, or change by a set amount. */
+  offsetGoal: Goal;
   /** Manual overrides (null = automatic). */
   cupSizeOverride: number | null;
   stemSizeOverride: string | null;
   offsetOverride: string | null;
-  headLengthOverride: number | null;
+  /** Manual stem position; null = automatic fit-and-fill seating. */
+  stemPose: StemPose | null;
+  /** Manual cup centre in the pelvic frame (mm); null = automatic placement. */
+  cupCenter: Vec2 | null;
 }
 
 export const DEFAULT_OPTIONS: PlanOptions = {
-  stemFamilyId: 'generic-taper-wedge',
+  stemFamilyId: 'catalystem',
   cupFamilyId: 'generic-hemi-shell',
   cupInclination: 40,
   cupOversize: 4,
   cupMedialWallOffset: 2,
   cupPlacement: 'teardrop',
-  extraLengthening: 0,
-  correctLLD: true,
+  legLengthGoal: { mode: 'match', mm: 0 },
+  offsetGoal: { mode: 'match', mm: 0 },
   cupSizeOverride: null,
   stemSizeOverride: null,
   offsetOverride: null,
-  headLengthOverride: null,
+  stemPose: null,
+  cupCenter: null,
 };
 
 export interface CaseData {

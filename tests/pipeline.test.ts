@@ -2,9 +2,9 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { generatePhantom, type Phantom } from '../src/imaging/synthetic';
 import { detectFemoralHead, detectCanal } from '../src/imaging/detect';
 import { emptyCase, type CaseData } from '../src/planning/types';
-import { buildPlan, engagementDepth, stemHeadCenter } from '../src/planning/plan';
+import { buildPlan, engagementDepth, stemOutlineLocal } from '../src/planning/plan';
 import { measure } from '../src/planning/measure';
-import { DEFAULT_LIBRARY } from '../src/planning/implants';
+import { DEFAULT_LIBRARY, neckHeadCenter, stemWidthAt, stemLength, parseStemTable } from '../src/planning/implants';
 import { add, scale, signedDistanceToLine } from '../src/geometry/vec';
 
 let ph: Phantom;
@@ -102,7 +102,6 @@ describe('measurements and plan', () => {
     const c = buildCase();
     c.options.stemSizeOverride = '5';
     c.options.offsetOverride = 'high';
-    c.options.headLengthOverride = 0;
     c.options.cupSizeOverride = 60;
     const plan = buildPlan(c, DEFAULT_LIBRARY)!;
     expect(plan.stem!.chosen.size.size).toBe('5');
@@ -124,13 +123,34 @@ describe('stem mechanics', () => {
     expect(d8).toBeLessThan(d3);
   });
 
-  it('head length moves the head along the neck axis', () => {
-    const off = DEFAULT_LIBRARY.stems[0].sizes[0].offsets[0];
-    const a = stemHeadCenter(off, 0, 0);
-    const b = stemHeadCenter(off, 7, 0);
-    expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeCloseTo(7);
-    expect(b.x).toBeGreaterThan(a.x);
-    expect(b.y).toBeLessThan(a.y);
+  it('CATALYSTEM template matches its dimension table', () => {
+    const fam = DEFAULT_LIBRARY.stems[0];
+    expect(fam.sizes).toHaveLength(13);
+    const s7 = fam.sizes.find((z) => z.size === '7')!;
+    // Body: length 107, ML 32 at resection, 12 distal (0.8 × length).
+    expect(stemLength(s7)).toBe(107);
+    const prox = stemWidthAt(s7, 0)!;
+    expect(prox.medial + prox.lateral).toBeCloseTo(32, 5);
+    const dist = stemWidthAt(s7, 0.8 * 107)!;
+    expect(dist.medial + dist.lateral).toBeCloseTo(12, 0);
+    // Necks (0 head): std offset 38 / leg length 30, high offset 46 / 30.
+    const std = s7.offsets.find((o) => o.id === 'std')!;
+    const high = s7.offsets.find((o) => o.id === 'high')!;
+    expect(neckHeadCenter(std)).toEqual({ x: 38, y: -30 });
+    expect(neckHeadCenter(high)).toEqual({ x: 46, y: -30 });
+    expect(std.neckShaftAngle).toBe(131);
+    // Outline is a closed polygon reaching the tip and the neck.
+    const poly = stemOutlineLocal(s7, std);
+    expect(Math.max(...poly.map((p) => p.y))).toBeCloseTo(107, 0);
+    expect(Math.min(...poly.map((p) => p.y))).toBeLessThan(-20);
+  });
+
+  it('parses a pasted table with or without high-offset columns', () => {
+    const specs = parseStemTable('size\tlength\n1\t95\t25\t8\t32\t28\t26\t38\t32\t26\n2,97,26,8,33,29,27');
+    expect(specs).toHaveLength(2);
+    expect(specs[0].necks.map((n) => n.id)).toEqual(['std', 'high']);
+    expect(specs[1].necks.map((n) => n.id)).toEqual(['std']);
+    expect(() => parseStemTable('1\t95\t25')).toThrow(/columns/);
   });
 });
 
@@ -179,5 +199,48 @@ describe('stem seating stays anatomical', () => {
       expect(plan.stem!.resectionAboveLT).toBeLessThanOrEqual(headCutLimit(plan));
     }
     ph = generatePhantom({ mmPerPx: 0.4, noise: 3, lldMm: 6 });
+  });
+});
+
+describe('goals and manual placement', () => {
+  it('honours a "change by" leg-length goal', () => {
+    const c = buildCase();
+    c.options.legLengthGoal = { mode: 'change', mm: 0 };
+    c.options.offsetGoal = { mode: 'change', mm: 0 };
+    const plan = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(plan.targetLegLengthChange).toBe(0);
+    expect(Math.abs(plan.predictedLegLengthChange!)).toBeLessThan(3);
+  });
+
+  it('equal-leg-length goal plus extra', () => {
+    const c = buildCase();
+    c.options.legLengthGoal = { mode: 'match', mm: 2 };
+    const plan = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(plan.targetLegLengthChange).toBeCloseTo(8, 0);
+  });
+
+  it('leg length and offset follow the dragged stem exactly', () => {
+    const c = buildCase();
+    const auto = buildPlan(c, DEFAULT_LIBRARY)!;
+    const ch = auto.stem!.chosen;
+    c.options.stemSizeOverride = ch.size.size;
+    c.options.offsetOverride = ch.offset.id;
+    c.options.stemPose = { ...ch.pose, depth: ch.pose.depth + 5 };
+    const sunk = buildPlan(c, DEFAULT_LIBRARY)!;
+    // Seating 5 mm deeper along a ~7° adducted axis shortens by ~5·cos7°.
+    expect(auto.predictedLegLengthChange! - sunk.predictedLegLengthChange!).toBeCloseTo(5 * Math.cos((7 * Math.PI) / 180), 1);
+    expect(sunk.stem!.manual).toBe(true);
+    // Components add up.
+    const r = sunk.reconstruction!;
+    expect(r.acetabular.ll + r.femoral.ll).toBeCloseTo(r.total.ll, 6);
+    expect(r.acetabular.off + r.femoral.off).toBeCloseTo(r.total.off, 6);
+  });
+
+  it('a dragged cup moves the COR and changes leg length one-for-one', () => {
+    const c = buildCase();
+    const auto = buildPlan(c, DEFAULT_LIBRARY)!;
+    c.options.cupCenter = { x: auto.cup!.center.x, y: auto.cup!.center.y + 4 };
+    const raised = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(raised.reconstruction!.acetabular.ll).toBeCloseTo(auto.reconstruction!.acetabular.ll - 4, 6);
   });
 });

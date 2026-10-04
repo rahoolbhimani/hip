@@ -1,11 +1,12 @@
 import type { Vec2 } from '../geometry/vec';
 import type { LoadedImage } from '../imaging/load';
 import { detectCanal, detectFemoralHead } from '../imaging/detect';
-import { type CaseData, type Side, type SideLandmarks, emptyCase } from '../planning/types';
+import { type CaseData, type LandmarkKey, type Side, type SideLandmarks, type StemPose, emptyCase } from '../planning/types';
 import { type PlanResult, buildPlan } from '../planning/plan';
 import { type ImplantLibrary, DEFAULT_LIBRARY } from '../planning/implants';
 import { measure, type Measurements } from '../planning/measure';
-import { type Step, STEPS, stepSide } from './steps';
+import { type Step, type StepKind, STEPS, stepSide } from './steps';
+import { autoDetectLandmarks } from '../imaging/autoLandmarks';
 
 /** Fallback scale before calibration, only used to size search windows. */
 const ASSUMED_MM_PER_PX = 0.15;
@@ -24,7 +25,20 @@ export interface AppState {
   measurements: Measurements | null;
   status: string;
   window: [number, number] | null;
+  /** Review of auto-proposed points, one at a time. */
+  review: { items: ReviewItem[]; index: number } | null;
 }
+
+export type ReviewItem = { kind: 'marker' } | { kind: 'landmark'; side: Side; key: LandmarkKey };
+
+const KEY_FOR_STEP: Record<StepKind, LandmarkKey> = {
+  teardrop: 'teardrop',
+  head: 'head',
+  lt: 'lesserTrochanter',
+  canal: 'canal',
+  acetEdge: 'acetabularEdge',
+  gt: 'greaterTrochanter',
+};
 
 type Listener = (s: AppState) => void;
 
@@ -39,6 +53,7 @@ export class Store {
     measurements: null,
     status: 'Load an AP pelvis radiograph (PNG, JPEG or DICOM) or open the demo case.',
     window: null,
+    review: null,
   };
   private listeners: Listener[] = [];
   /** Real sizes of the calibration objects, set from the calibration panel. */
@@ -64,6 +79,173 @@ export class Store {
     this.state.measurements = c.calibration ? measure(c) : null;
     this.state.plan = c.calibration ? buildPlan(c, this.state.library) : null;
     this.emit();
+  }
+
+  // ------------------------------------------------------------ auto-proposals & review
+
+  statusOf(side: Side, key: LandmarkKey): 'proposed' | 'confirmed' | undefined {
+    return this.landmarks(side).status?.[key];
+  }
+
+  stepStatus(step: Step): 'proposed' | 'confirmed' | undefined {
+    if (!this.isStepDone(step)) return undefined;
+    return this.statusOf(stepSide(step, this.state.case.operativeSide), KEY_FOR_STEP[step.kind]) ?? 'confirmed';
+  }
+
+  private setStatusOf(side: Side, key: LandmarkKey, st: 'proposed' | 'confirmed'): void {
+    const l = this.landmarks(side);
+    l.status = { ...(l.status ?? {}), [key]: st };
+  }
+
+  /** Propose every landmark automatically; points the user already confirmed are kept. */
+  runAutoDetect(): void {
+    const img = this.state.image;
+    if (!img) return;
+    const c = this.state.case;
+    const res = autoDetectLandmarks(img.gray, {
+      mmPerPx: c.calibration?.mmPerPx,
+      standardOrientation: c.standardOrientation,
+      markerDiameterMm: this.markerDiameterMm,
+    });
+    const items: ReviewItem[] = [];
+    if (res.marker && !c.calibration) {
+      c.calibration = {
+        method: 'marker',
+        mmPerPx: this.markerDiameterMm / (2 * res.marker.radius),
+        marker: res.marker,
+        markerDiameterMm: this.markerDiameterMm,
+        proposed: true,
+      };
+      items.push({ kind: 'marker' });
+    }
+    const op = c.operativeSide;
+    const ct = op === 'R' ? 'L' : 'R';
+    let proposed = 0;
+    const put = (side: Side, key: LandmarkKey, apply: () => void): void => {
+      if (this.statusOf(side, key) === 'confirmed') return;
+      apply();
+      this.setStatusOf(side, key, 'proposed');
+      proposed++;
+    };
+    for (const side of [op, ct] as Side[]) {
+      const a = res.sides[side];
+      const l = this.landmarks(side);
+      if (a.teardrop) put(side, 'teardrop', () => (l.teardrop = a.teardrop));
+      if (a.head) put(side, 'head', () => (l.head = a.head));
+      if (a.lesserTrochanter) put(side, 'lesserTrochanter', () => (l.lesserTrochanter = a.lesserTrochanter));
+      if (a.canalSeeds) put(side, 'canal', () => {
+        l.canalSeeds = a.canalSeeds;
+        this.detectCanal(side);
+      });
+    }
+    const order: Array<[Side, LandmarkKey]> = [
+      [op, 'teardrop'], [ct, 'teardrop'], [op, 'head'], [op, 'lesserTrochanter'], [op, 'canal'],
+      [ct, 'head'], [ct, 'lesserTrochanter'], [ct, 'canal'],
+    ];
+    for (const [side, key] of order) if (this.statusOf(side, key) === 'proposed') items.push({ kind: 'landmark', side, key });
+    this.state.activeTool = null;
+    this.state.pendingClicks = [];
+    this.state.review = items.length ? { items, index: 0 } : null;
+    const missed = res.notes.length ? ` ${res.notes.join(' ')}` : '';
+    this.state.status = items.length
+      ? `Proposed ${proposed} landmark${proposed === 1 ? '' : 's'}${res.marker ? ' and the calibration' : ''}. Check each one: press OK (Enter) or drag it first.${missed}`
+      : `No landmarks could be proposed automatically. Place them by hand.${missed}`;
+    this.recompute();
+  }
+
+  currentReviewItem(): ReviewItem | null {
+    const r = this.state.review;
+    return r ? r.items[r.index] ?? null : null;
+  }
+
+  private confirmItem(item: ReviewItem): void {
+    if (item.kind === 'marker') {
+      if (this.state.case.calibration) this.state.case.calibration.proposed = false;
+    } else this.setStatusOf(item.side, item.key, 'confirmed');
+  }
+
+  private isConfirmed(item: ReviewItem): boolean {
+    return item.kind === 'marker' ? !this.state.case.calibration?.proposed : this.statusOf(item.side, item.key) === 'confirmed';
+  }
+
+  reviewOK(): void {
+    const item = this.currentReviewItem();
+    if (!item) return;
+    this.confirmItem(item);
+    this.advanceReview();
+  }
+
+  reviewSkip(): void {
+    this.advanceReview();
+  }
+
+  reviewOKAll(): void {
+    const r = this.state.review;
+    if (!r) return;
+    for (const it of r.items) this.confirmItem(it);
+    this.endReview('All proposed points confirmed.');
+  }
+
+  reviewGoTo(side: Side, key: LandmarkKey): void {
+    const r = this.state.review ?? { items: [], index: 0 };
+    let idx = r.items.findIndex((it) => it.kind === 'landmark' && it.side === side && it.key === key);
+    if (idx < 0) {
+      r.items.push({ kind: 'landmark', side, key });
+      idx = r.items.length - 1;
+    }
+    this.state.review = { items: r.items, index: idx };
+    this.state.activeTool = null;
+    this.emit();
+  }
+
+  endReview(msg = 'Review closed. Unconfirmed points stay marked with "?".'): void {
+    this.state.review = null;
+    this.state.status = msg;
+    this.recompute();
+  }
+
+  /** Move to the next unconfirmed item after the current one; finish when none is left. */
+  private advanceReview(): void {
+    const r = this.state.review;
+    if (!r) return;
+    const n = r.items.length;
+    for (let step = 1; step < n; step++) {
+      const i = (r.index + step) % n;
+      if (!this.isConfirmed(r.items[i])) {
+        this.state.review = { items: r.items, index: i };
+        this.recompute();
+        return;
+      }
+    }
+    this.endReview(this.unconfirmedCount() ? 'Review done. Skipped points stay marked with "?".' : 'All points confirmed. Drag any implant or point to fine-tune.');
+  }
+
+  unconfirmedCount(): number {
+    let n = this.state.case.calibration?.proposed ? 1 : 0;
+    for (const side of ['R', 'L'] as Side[]) for (const v of Object.values(this.landmarks(side).status ?? {})) if (v === 'proposed') n++;
+    return n;
+  }
+
+  /** Manual stem placement; locks the current size and neck so dragging doesn't swap them. */
+  setStemPose(pose: StemPose, size: string, offsetId: string): void {
+    const o = this.state.case.options;
+    o.stemPose = pose;
+    o.stemSizeOverride = size;
+    o.offsetOverride = offsetId;
+    this.recompute();
+  }
+
+  resetStem(): void {
+    const o = this.state.case.options;
+    o.stemPose = null;
+    o.stemSizeOverride = null;
+    o.offsetOverride = null;
+    this.recompute();
+  }
+
+  resetCup(): void {
+    this.state.case.options.cupCenter = null;
+    this.recompute();
   }
 
   mmPerPx(): number {
@@ -115,6 +297,7 @@ export class Store {
 
   clearStep(s: Step): void {
     const l = this.landmarks(stepSide(s, this.state.case.operativeSide));
+    if (l.status) delete l.status[KEY_FOR_STEP[s.kind]];
     switch (s.kind) {
       case 'teardrop':
         delete l.teardrop;
@@ -190,6 +373,7 @@ export class Store {
         break;
     }
     this.state.pendingClicks = [];
+    if (ok) this.setStatusOf(side, KEY_FOR_STEP[step.kind], 'confirmed');
     if (ok) {
       const next = this.nextStep();
       this.state.activeTool = next ? { type: 'step', step: next } : null;

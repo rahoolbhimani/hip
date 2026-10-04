@@ -19,27 +19,46 @@ export function renderResults(s: AppState): string {
   if (p?.cup || p?.stem) {
     out.push('<div class="big">');
     if (p.cup) {
-      out.push(`<div class="card cup"><div class="t">Cup</div><div class="v">${p.cup.size.outerDiameter} mm</div>
+      out.push(`<div class="card cup"><div class="t">Cup${p.cup.manual ? ' · manual' : ''}</div><div class="v">${p.cup.size.outerDiameter} mm</div>
         <div class="s">${p.cup.inclination}° · ${p.cup.bearingDiameter} mm head</div></div>`);
     }
     if (p.stem) {
       const c = p.stem.chosen;
-      out.push(`<div class="card stem"><div class="t">Stem</div><div class="v">Size ${esc(c.size.size)}</div>
-        <div class="s">${esc(c.offset.label)} · head ${c.headLength >= 0 ? '+' : ''}${c.headLength}</div></div>`);
+      out.push(`<div class="card stem"><div class="t">${esc(p.stem.family.name)}${p.stem.manual ? ' · manual' : ''}</div><div class="v">Size ${esc(c.size.size)}</div>
+        <div class="s">${esc(c.offset.label)} · 0 head</div></div>`);
     }
     out.push('</div>');
   }
 
-  if (p?.stem && p.predictedLegLengthChange !== undefined) {
-    const llErr = p.predictedLegLengthChange - p.targetLegLengthChange;
-    const offErr = (p.predictedOffsetChange ?? 0) - p.targetOffsetChange;
+  if (p?.stem && p.reconstruction) {
+    const r = p.reconstruction;
+    const llErr = r.total.ll - p.targetLegLengthChange;
+    const offErr = r.total.off - p.targetOffsetChange;
     const cls = (e: number, tol: number) => (Math.abs(e) <= tol ? 'delta-ok' : 'delta-warn');
-    out.push('<h3>Predicted reconstruction</h3><table class="kv">');
-    out.push(row('Leg length change', `<span class="${cls(llErr, 3)}">${signed(p.predictedLegLengthChange)}</span> (target ${signed(p.targetLegLengthChange)})`));
-    out.push(row('Global offset change', `<span class="${cls(offErr, 4)}">${signed(p.predictedOffsetChange)}</span> (target ${signed(p.targetOffsetChange)})`));
-    out.push(row('Neck cut above LT', f1(p.stem.resectionAboveLT)));
+    out.push('<h3>Goal vs plan</h3><table class="kv breakdown">');
+    out.push(row('<b>Leg length change</b>', `<span class="${cls(llErr, 2)}"><b>${signed(r.total.ll)}</b></span> (goal ${signed(p.targetLegLengthChange)})`));
+    out.push(row('from cup (COR)', signed(r.acetabular.ll)));
+    out.push(row('from stem', signed(r.femoral.ll)));
+    out.push(row('<b>Offset change</b>', `<span class="${cls(offErr, 3)}"><b>${signed(r.total.off)}</b></span> (goal ${signed(p.targetOffsetChange)})`));
+    out.push(row('from cup (COR)', signed(r.acetabular.off)));
+    out.push(row('from stem', signed(r.femoral.off)));
+    out.push('</table><table class="kv">');
+    if (p.postopLegLengthDifference !== undefined) {
+      const d = p.postopLegLengthDifference;
+      out.push(row('Leg length after surgery', Math.abs(d) < 0.5 ? 'equal' : `operative side ${Math.abs(d).toFixed(1)} mm ${d < 0 ? 'short' : 'long'}`));
+    }
+    if (p.postopGlobalOffset !== undefined) {
+      const ct = m.contra.globalOffset;
+      out.push(row('Global offset after surgery', `${p.postopGlobalOffset.toFixed(1)} mm${ct !== undefined ? ` (other side ${ct.toFixed(1)})` : ''}`));
+    }
     if (p.corShift) {
       out.push(row('COR shift', `${p.corShift.x <= 0 ? 'medial' : 'lateral'} ${Math.abs(p.corShift.x).toFixed(1)}, ${p.corShift.y <= 0 ? 'inferior' : 'superior'} ${Math.abs(p.corShift.y).toFixed(1)} mm`));
+    }
+    out.push(row('Neck cut above LT', f1(p.stem.resectionAboveLT)));
+    if (p.stem.chosen.proud >= 0.5) out.push(row('Seating', `${p.stem.chosen.proud.toFixed(1)} mm proud of full cortical contact`));
+    const pose = p.stem.chosen.pose;
+    if (p.stem.manual && (Math.abs(pose.tilt) >= 0.5 || Math.abs(pose.shift) >= 0.5)) {
+      out.push(row('Stem alignment', `${Math.abs(pose.tilt).toFixed(1)}° ${pose.tilt >= 0 ? 'varus' : 'valgus'}, ${Math.abs(pose.shift).toFixed(1)} mm ${pose.shift >= 0 ? 'medial' : 'lateral'}`));
     }
     if (p.cup?.lateralUncoverage !== undefined) {
       const u = p.cup.lateralUncoverage;
@@ -50,14 +69,15 @@ export function renderResults(s: AppState): string {
     if (p.stem.fill.length) {
       out.push('<h3>Canal fill (stem / endosteal width)</h3><table class="kv">');
       for (const f of p.stem.fill) {
-        out.push(row(`${f.d.toFixed(0)} mm below cut`, `${f.stemWidth.toFixed(1)} / ${f.canalWidth.toFixed(1)} mm · ${(f.fill * 100).toFixed(0)}%`));
+        const v = `${f.stemWidth.toFixed(1)} / ${f.canalWidth.toFixed(1)} mm · ${(f.fill * 100).toFixed(0)}%`;
+        out.push(row(`${f.d.toFixed(0)} mm below cut`, f.breach ? `<span class="delta-warn">${v} · breach</span>` : v));
       }
       out.push('</table>');
     }
     if (p.stem.alternatives.length) {
       out.push('<h3>Alternatives</h3><table class="kv">');
       for (const a of p.stem.alternatives) {
-        out.push(row(`Size ${esc(a.size.size)} ${esc(a.offset.id)} ${a.headLength >= 0 ? '+' : ''}${a.headLength}`, `LL ${signed(a.legLengthChange)}, off ${signed(a.offsetChange)}`));
+        out.push(row(`Size ${esc(a.size.size)} ${a.offset.id === 'high' ? 'high offset' : 'standard'}`, `LL ${signed(a.recon.total.ll)}, offset ${signed(a.recon.total.off)}`));
       }
       out.push('</table>');
     }

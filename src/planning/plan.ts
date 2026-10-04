@@ -1,23 +1,25 @@
 /**
- * Automatic templating engine.
+ * Templating engine.
  *
  * Given calibrated landmarks it:
- *  1. sizes and positions the acetabular cup (teardrop-referenced or at the
- *     native centre of rotation) at the target inclination;
+ *  1. sizes and positions the acetabular cup (teardrop-referenced, at the
+ *     native centre of rotation, or where the user dragged it);
  *  2. for every stem size finds the depth at which the tapered stem engages
- *     the endosteal canal ("fit and fill");
- *  3. enumerates size × offset option × head length and picks the
- *     combination that best restores leg length and global offset with a
- *     plausible neck-resection level.
+ *     the endosteal canal ("fit and fill"), unless the user placed it;
+ *  3. picks the size × neck option (0 mm head) that best restores leg length
+ *     and global offset with a neck cut between the LT and the head.
  *
- * Leg length and offset changes are computed with the standard 2D model:
- * the femur hangs from the centre of rotation, so moving the prosthetic head
- * relative to the femur, or the cup relative to the pelvis, shifts the leg.
- * The femoral anatomical axis is assumed parallel to the pelvic vertical when
- * combining the two contributions (cos error < 1% for typical 5–8° axes).
+ * Reconstruction (2D, exact for translation): the femur on the radiograph
+ * sits with its native head in the native acetabulum. After reduction the
+ * prosthetic head centre S moves to the cup centre C, so the femur is
+ * translated by T = C − S (pelvic frame). Hence
+ *   leg-length change   = −T_v  (femur moves distally → longer)
+ *   global offset change = T_u  (femur moves laterally → more offset)
+ * split into an acetabular part (C − native centre H) and a femoral part
+ * (H − S).
  */
 import { median } from '../geometry/fit';
-import { type Vec2, type Frame, add, scale, sub, dot, perp, fromFrame, toFrame, rad } from '../geometry/vec';
+import { type Vec2, type Frame, add, scale, sub, dot, perp, fromFrame, toFrame, rad, rotate } from '../geometry/vec';
 import {
   type ImplantLibrary,
   type StemFamily,
@@ -27,8 +29,9 @@ import {
   type CupSize,
   stemWidthAt,
   stemLength,
+  neckHeadCenter,
 } from './implants';
-import { type CaseData, otherSide } from './types';
+import { type CaseData, type StemPose } from './types';
 import { type Measurements, measure, toMm, femoralAxisMm } from './measure';
 
 export interface CanalProfileSample {
@@ -53,18 +56,34 @@ export interface CupPlan {
   bearingDiameter: number;
   /** Lateral uncovered rim beyond the acetabular edge, mm (only when the edge was marked). */
   lateralUncoverage?: number;
+  manual: boolean;
+}
+
+/** Leg-length (+ = longer) and global-offset (+ = more) change, mm. */
+export interface Change {
+  ll: number;
+  off: number;
+}
+
+export interface Reconstruction {
+  /** Cup centre relative to the native head centre. */
+  acetabular: Change;
+  /** Native head centre relative to the prosthetic head on the femur. */
+  femoral: Change;
+  total: Change;
+  /** Prosthetic head centre in the pelvic frame before reduction (mm). */
+  stemHead: Vec2;
 }
 
 export interface StemCandidate {
   size: StemSize;
   offset: StemOffsetOption;
-  headLength: number;
-  /** Depth of the resection level below the lesser-trochanter level (mm, negative = above). */
-  seatDepth: number;
-  /** Prosthetic head centre in the femoral frame (m medial, d distal), mm. */
+  pose: StemPose;
+  /** How far (mm) the auto plan seats the stem above full cortical engagement. */
+  proud: number;
+  /** Prosthetic head centre (0 mm head) in the femoral frame (m medial, d distal), mm. */
   headCenter: Vec2;
-  legLengthChange: number;
-  offsetChange: number;
+  recon: Reconstruction;
   score: number;
   /** Stem fills beyond the detected canal (canal extrapolated). */
   beyondCanalData: boolean;
@@ -77,11 +96,14 @@ export interface FillSample {
   stemWidth: number;
   canalWidth: number;
   fill: number;
+  /** The stem edge crosses the endosteal border at this level. */
+  breach: boolean;
 }
 
 export interface StemPlan {
   family: StemFamily;
   chosen: StemCandidate;
+  manual: boolean;
   /** Height of the medial resection point above the lesser trochanter (mm). */
   resectionAboveLT: number;
   fill: FillSample[];
@@ -99,6 +121,10 @@ export interface PlanResult {
   targetOffsetChange: number;
   predictedLegLengthChange?: number;
   predictedOffsetChange?: number;
+  reconstruction?: Reconstruction;
+  /** Operative minus contralateral leg length after surgery (mm). */
+  postopLegLengthDifference?: number;
+  postopGlobalOffset?: number;
   /** Shift of the centre of rotation, pelvic frame (u lateral, v superior), mm. */
   corShift?: Vec2;
   warnings: string[];
@@ -107,6 +133,7 @@ export interface PlanResult {
 
 const ENGAGE_TOLERANCE_MM = 0.5;
 const SIDE_TOLERANCE_MM = 2;
+const BREACH_TOLERANCE_MM = 1;
 /** Upper limit for the medial neck cut above the LT when the head does not constrain it further. */
 const DEFAULT_MAX_RESECTION_MM = 30;
 /** The medial cut may sit at most this far below the LT (deep cuts are rejected). */
@@ -115,28 +142,36 @@ const MIN_RESECTION_MM = 0;
 const MIN_ENGAGE_STEM_LEVEL = 20;
 /** Femoral levels (mm below the LT) from which the canal profile is trusted. */
 const MIN_ENGAGE_FEMUR_LEVEL = 5;
+/** Largest amount the auto plan may seat a stem proud of full engagement (mm). */
+const MAX_PROUD_MM = 4;
+
+/** Map a stem-local point (m medial, d distal from the resection level) into the femoral frame. */
+export function stemToFemur(pose: StemPose, q: Vec2): Vec2 {
+  return add({ x: pose.shift, y: pose.depth }, rotate(q, rad(pose.tilt)));
+}
 
 export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   const m = measure(c);
   if (!m) return null;
   const mmPerPx = c.calibration!.mmPerPx;
   const opL = c.landmarks[c.operativeSide];
-  const ctL = c.landmarks[otherSide(c.operativeSide)];
-  const o = c.options;
+    const o = c.options;
   const warnings = [...m.warnings];
   const missing: string[] = [];
 
   if (!opL.head) missing.push('operative femoral head');
   if (!opL.lesserTrochanter) missing.push('operative lesser trochanter');
   if (!opL.canal) missing.push('operative femoral canal');
-  if (!ctL.lesserTrochanter) warnings.push('Contralateral lesser trochanter not marked — leg length difference unknown; planning to keep current length.');
-  if (!ctL.head || !ctL.canal) warnings.push('Contralateral head/canal not marked — restoring the operative side\'s own offset.');
 
-  let targetLL = o.extraLengthening;
-  if (o.correctLLD && m.legLengthDifference !== undefined) targetLL += -m.legLengthDifference;
-  let targetOffset = 0;
-  if (m.contra.globalOffset !== undefined && m.op.globalOffset !== undefined) {
-    targetOffset = m.contra.globalOffset - m.op.globalOffset;
+  let targetLL = o.legLengthGoal.mm;
+  if (o.legLengthGoal.mode === 'match') {
+    if (m.legLengthDifference !== undefined) targetLL += -m.legLengthDifference;
+    else warnings.push('Leg-length goal "equal to the other side" needs both lesser trochanters; planning a change of ' + `${targetLL} mm instead.`);
+  }
+  let targetOffset = o.offsetGoal.mm;
+  if (o.offsetGoal.mode === 'match') {
+    if (m.contra.globalOffset !== undefined && m.op.globalOffset !== undefined) targetOffset += m.contra.globalOffset - m.op.globalOffset;
+    else warnings.push('Offset goal "match the other side" needs the contralateral head and canal; planning a change of ' + `${targetOffset} mm instead.`);
   }
 
   const result: PlanResult = {
@@ -178,8 +213,21 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   }
 
   const nativeHeadF = toFrame(femur, headMm);
-  const corShift = sub(result.cup.center, m.op.headCenter); // pelvic frame: u lateral, v superior
-  result.corShift = corShift;
+  const nativeHeadP = m.op.headCenter;
+  const cupCenter = result.cup.center;
+  result.corShift = sub(cupCenter, nativeHeadP);
+
+  const reconstruct = (headF: Vec2): Reconstruction => {
+    const stemHead = toFrame(m.pelvis, fromFrame(femur, headF));
+    const acet = sub(cupCenter, nativeHeadP);
+    const fem = sub(nativeHeadP, stemHead);
+    return {
+      acetabular: { ll: -acet.y, off: acet.x },
+      femoral: { ll: -fem.y, off: fem.x },
+      total: { ll: -(acet.y + fem.y), off: acet.x + fem.x },
+      stemHead,
+    };
+  };
 
   // The medial neck cut must lie below the femoral head: at most the height
   // of the head's inferior margin above the LT.
@@ -187,42 +235,49 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   const maxResection = Math.max(5, Math.min(DEFAULT_MAX_RESECTION_MM, -nativeHeadF.y - headRadiusMm));
 
   const candidates: StemCandidate[] = [];
+  const manualPose = o.stemPose;
   const sizes = o.stemSizeOverride ? stemFamily.sizes.filter((s) => s.size === o.stemSizeOverride) : stemFamily.sizes;
   for (const size of sizes) {
     const engage = engagementDepth(size, profile, maxResection);
+    // Auto: from full cortical engagement up to MAX_PROUD_MM proud, so the
+    // leg-length goal can be met between discrete sizes.
+    const seats: Array<{ pose: StemPose; proud: number }> = manualPose
+      ? [{ pose: manualPose, proud: 0 }]
+      : [];
+    if (!manualPose) {
+      for (let proud = 0; proud <= MAX_PROUD_MM + 1e-9; proud += 0.5) {
+        const depth = engage.depth - proud;
+        if (proud > 0 && (engage.tooLarge || depth < -maxResection)) break;
+        seats.push({ pose: { depth, shift: 0, tilt: 0 }, proud });
+      }
+    }
     const offsets = o.offsetOverride ? size.offsets.filter((x) => x.id === o.offsetOverride) : size.offsets;
-    const heads = o.headLengthOverride !== null ? [o.headLengthOverride] : stemFamily.headLengths;
-    for (const offset of offsets) {
-      for (const headLength of heads) {
-        const hc = stemHeadCenter(offset, headLength, engage.depth);
-        // Femoral contribution: head higher on the femur (more negative d) lengthens.
-        const llFemoral = nativeHeadF.y - hc.y;
-        const offFemoral = hc.x - nativeHeadF.x;
-        const legLengthChange = llFemoral - corShift.y;
-        const offsetChange = offFemoral + corShift.x;
-        const resectionAbove = -engage.depth;
-        let score = (legLengthChange - targetLL) ** 2 + 0.5 * (offsetChange - targetOffset) ** 2;
-        score += Math.abs(headLength) / 3.5; // prefer the neutral head
+    for (const { pose, proud } of seats) {
+      for (const offset of offsets) {
+        const hc = stemToFemur(pose, neckHeadCenter(offset));
+        const recon = reconstruct(hc);
+        const resectionAbove = -pose.depth;
+        let score = (recon.total.ll - targetLL) ** 2 + 0.5 * (recon.total.off - targetOffset) ** 2;
+        score += 0.15 * proud * proud; // prefer a fully seated stem
         if (resectionAbove < 5) score += 2 * (5 - resectionAbove) ** 2;
         if (resectionAbove > 20) score += 0.5 * (resectionAbove - 20) ** 2;
         if (engage.beyondData) score += 4;
         candidates.push({
           size,
           offset,
-          headLength,
-          seatDepth: engage.depth,
+          pose,
+          proud,
           headCenter: hc,
-          legLengthChange,
-          offsetChange,
+          recon,
           score,
           beyondCanalData: engage.beyondData,
-          plausibleSeat: !engage.tooLarge && resectionAbove >= MIN_RESECTION_MM,
+          plausibleSeat: manualPose ? true : !engage.tooLarge && resectionAbove >= MIN_RESECTION_MM,
         });
       }
     }
   }
   if (candidates.length === 0) {
-    warnings.push('No stem candidates match the selected overrides.');
+    warnings.push('No stem matches the selected size and neck.');
     return result;
   }
   candidates.sort((a, b) => a.score - b.score);
@@ -232,33 +287,31 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   if (!chosen.plausibleSeat) {
     warnings.push(
       o.stemSizeOverride
-        ? `Stem size ${o.stemSizeOverride} cannot seat with the neck cut between the lesser trochanter and the head — choose another size.`
-        : 'No stem size seats with the neck cut between the lesser trochanter and the head. The detected canal is probably too narrow: check the green canal points and move the canal seeds into the medullary canal.',
+        ? `Stem size ${o.stemSizeOverride} cannot seat with the neck cut between the lesser trochanter and the head. Choose another size or drag the stem.`
+        : 'No stem size seats with the neck cut between the lesser trochanter and the head. The detected canal is probably too narrow: check the green canal points and move the canal seeds into the medullary canal, or drag the stem into place.',
     );
   }
-  const fill: FillSample[] = [];
-  const len = stemLength(chosen.size);
-  for (const ds of [10, 20, 40, 60, 80, len - 10]) {
-    if (ds > len) continue;
-    const w = stemWidthAt(chosen.size, ds);
-    const cw = canalAt(profile, chosen.seatDepth + ds);
-    if (!w || !cw) continue;
-    const stemWidth = w.medial + w.lateral;
-    const canalWidth = cw.medial + cw.lateral;
-    fill.push({ d: ds, stemWidth, canalWidth, fill: stemWidth / canalWidth });
+  const fill = fillSamples(chosen.size, chosen.pose, profile);
+  const breaches = fill.filter((f) => f.breach);
+  if (breaches.length) {
+    warnings.push(`Stem crosses the endosteal cortex at ${breaches.map((b) => `${b.d.toFixed(0)} mm`).join(', ')} below the cut. Choose a smaller size or adjust the position.`);
   }
   result.stem = {
     family: stemFamily,
     chosen,
-    resectionAboveLT: -chosen.seatDepth,
+    manual: !!manualPose,
+    resectionAboveLT: -chosen.pose.depth,
     fill,
-    alternatives: uniqueBySize(pool).slice(1, 4),
+    alternatives: manualPose ? [] : uniqueBySize(pool).slice(1, 4),
   };
-  result.predictedLegLengthChange = chosen.legLengthChange;
-  result.predictedOffsetChange = chosen.offsetChange;
-  if (chosen.beyondCanalData) warnings.push('Stem extends beyond the detected canal — extend the distal canal seed for a reliable size.');
-  if (Math.abs(chosen.legLengthChange - targetLL) > 3) {
-    warnings.push(`Best combination misses the leg-length target by ${(chosen.legLengthChange - targetLL).toFixed(1)} mm.`);
+  result.reconstruction = chosen.recon;
+  result.predictedLegLengthChange = chosen.recon.total.ll;
+  result.predictedOffsetChange = chosen.recon.total.off;
+  if (m.legLengthDifference !== undefined) result.postopLegLengthDifference = m.legLengthDifference + chosen.recon.total.ll;
+  if (m.op.globalOffset !== undefined) result.postopGlobalOffset = m.op.globalOffset + chosen.recon.total.off;
+  if (chosen.beyondCanalData) warnings.push('Stem extends beyond the detected canal. Move the distal canal seed further down for a reliable size.');
+  if (!manualPose && Math.abs(chosen.recon.total.ll - targetLL) > 3) {
+    warnings.push(`Best combination misses the leg-length target by ${(chosen.recon.total.ll - targetLL).toFixed(1)} mm.`);
   }
   return result;
 }
@@ -270,6 +323,29 @@ function uniqueBySize(cands: StemCandidate[]): StemCandidate[] {
     if (seen.has(cnd.size.size)) continue;
     seen.add(cnd.size.size);
     out.push(cnd);
+  }
+  return out;
+}
+
+/** Stem vs canal width at standard levels below the cut, for any pose. */
+export function fillSamples(size: StemSize, pose: StemPose, profile: CanalProfileSample[]): FillSample[] {
+  const out: FillSample[] = [];
+  const len = stemLength(size);
+  for (const ds of [20, 40, 60, 80, len - 10]) {
+    if (ds > len || ds < 0) continue;
+    const w = stemWidthAt(size, ds);
+    if (!w) continue;
+    const med = stemToFemur(pose, { x: w.medial, y: ds });
+    const lat = stemToFemur(pose, { x: -w.lateral, y: ds });
+    const ctr = stemToFemur(pose, { x: 0, y: ds });
+    const cm = canalAt(profile, med.y);
+    const cl = canalAt(profile, lat.y);
+    const cc = canalAt(profile, ctr.y);
+    if (!cm || !cl || !cc) continue;
+    const stemWidth = w.medial + w.lateral;
+    const canalWidth = cc.medial + cc.lateral;
+    const breach = med.x > cm.medial + BREACH_TOLERANCE_MM || -lat.x > cl.lateral + BREACH_TOLERANCE_MM;
+    out.push({ d: ds, stemWidth, canalWidth, fill: stemWidth / canalWidth, breach });
   }
   return out;
 }
@@ -293,7 +369,9 @@ export function planCup(
   const r = size.outerDiameter / 2;
   const incl = rad(o.cupInclination);
   let center: Vec2;
-  if (o.cupPlacement === 'native' && m.op.headCenter) {
+  if (o.cupCenter) {
+    center = o.cupCenter;
+  } else if (o.cupPlacement === 'native' && m.op.headCenter) {
     center = m.op.headCenter;
   } else {
     // Medial wall abuts the teardrop; inferomedial rim level with its inferior tip.
@@ -312,15 +390,7 @@ export function planCup(
     superolateralRim,
     bearingDiameter: size.maxHeadDiameter,
     lateralUncoverage: acetabularEdge ? superolateralRim.x - acetabularEdge.x : undefined,
-  };
-}
-
-/** Prosthetic head centre in the femoral frame for a stem seated at `depth`. */
-export function stemHeadCenter(offset: StemOffsetOption, headLength: number, depth: number): Vec2 {
-  const beta = rad(180 - offset.neckShaftAngle);
-  return {
-    x: offset.offset + headLength * Math.sin(beta),
-    y: depth - offset.height - headLength * Math.cos(beta),
+    manual: !!o.cupCenter,
   };
 }
 
@@ -399,34 +469,54 @@ export function engagementDepth(
   return { depth, beyondData: depth + len > lastD, tooLarge: false };
 }
 
-/** Stem outline polygon in the femoral frame (mm) for drawing. */
-export function stemOutline(size: StemSize, offset: StemOffsetOption, headLength: number, depth: number): Vec2[] {
-  const medialEdge = size.profile.map((p) => ({ x: p.medial, y: depth + p.d }));
-  const lateralEdge = size.profile.map((p) => ({ x: -p.lateral, y: depth + p.d })).reverse();
-  const hc = stemHeadCenter(offset, 0, depth);
+/**
+ * Stem template outline in stem-local coordinates (mm), 0 mm head:
+ * body from the generated profile plus neck and trunnion drawn from the
+ * table's offset, leg length and neck length.
+ */
+export function stemOutlineLocal(size: StemSize, offset: StemOffsetOption): Vec2[] {
+  const hc = neckHeadCenter(offset);
   const beta = rad(180 - offset.neckShaftAngle);
-  const neckDir = { x: Math.sin(beta), y: -Math.cos(beta) };
-  // Points inferomedially (towards the calcar side of the neck).
-  const neckPerp = { x: -neckDir.y, y: neckDir.x };
-  const trunnionBase = sub(hc, scale(neckDir, 14 - Math.min(headLength, 0)));
-  const neckHalf = 6;
-  const shoulder = { x: -size.profile[0].lateral, y: depth - size.shoulderHeight };
-  return [
-    shoulder,
-    add(trunnionBase, scale(neckPerp, -neckHalf)),
-    add(trunnionBase, scale(neckPerp, neckHalf)),
-    ...medialEdge,
-    ...lateralEdge,
+  const dir = { x: Math.sin(beta), y: -Math.cos(beta) }; // neck axis towards the head
+  const inf = { x: -dir.y, y: dir.x }; // perpendicular, inferomedial side
+  const at = (p: Vec2, half: number): [Vec2, Vec2] => [sub(p, scale(inf, half)), add(p, scale(inf, half))];
+  // Trunnion (taper) and neck just below it.
+  const [trSup, trInf] = at(sub(hc, scale(dir, 1)), 5);
+  const [neckSup, neckInf] = at(sub(hc, scale(dir, 14)), 6);
+  const lat0 = size.profile[0].lateral;
+  const med0 = size.profile[0].medial;
+  // Lateral shoulder, rounded.
+  const sh = size.shoulderHeight;
+  const shoulder = [
+    { x: -lat0, y: -sh + 5 },
+    { x: -lat0 + 1.5, y: -sh + 1.5 },
+    { x: -lat0 + 5, y: -sh },
   ];
+  // Inferior neck border curving concavely into the calcar (quadratic Bézier).
+  const calcarTop = { x: med0, y: 0 };
+  const midChord = scale(add(neckInf, calcarTop), 0.5);
+  const chord = sub(calcarTop, neckInf);
+  const len = Math.hypot(chord.x, chord.y) || 1;
+  const towardAxis = { x: chord.y / len, y: -chord.x / len }; // left normal of the chord
+  const ctrl = add(midChord, scale(towardAxis.x < 0 ? towardAxis : scale(towardAxis, -1), 0.18 * len));
+  const calcar: Vec2[] = [];
+  for (let i = 1; i < 8; i++) {
+    const t = i / 8;
+    const a = scale(neckInf, (1 - t) ** 2);
+    const b = scale(ctrl, 2 * t * (1 - t));
+    const c = scale(calcarTop, t * t);
+    calcar.push(add(add(a, b), c));
+  }
+  const medial = size.profile.map((p) => ({ x: p.medial, y: p.d }));
+  const lateral = size.profile.map((p) => ({ x: -p.lateral, y: p.d })).reverse();
+  return [...shoulder, neckSup, trSup, trInf, neckInf, ...calcar, ...medial, ...lateral];
 }
 
-/** Neck-cut line endpoints in the femoral frame (mm): medial point → lateral. */
-export function neckCutLine(size: StemSize, offset: StemOffsetOption, depth: number): [Vec2, Vec2] {
+/** Neck-cut line in stem-local coordinates: from the medial resection point, perpendicular to the neck, superolaterally. */
+export function neckCutLocal(size: StemSize, offset: StemOffsetOption): [Vec2, Vec2] {
   const beta = rad(180 - offset.neckShaftAngle);
-  // Perpendicular to the neck axis, running superolaterally.
   const dir = { x: -Math.cos(beta), y: -Math.sin(beta) };
-  const start = { x: size.profile[0].medial + 4, y: depth };
-  return [start, add(start, scale(dir, 45))];
+  const start = { x: size.profile[0].medial + 2, y: 0 };
+  const ml = size.profile[0].medial + size.profile[0].lateral;
+  return [start, add(start, scale(dir, 1.5 * ml))];
 }
-
-export const femurToImageMm = fromFrame;

@@ -1,17 +1,19 @@
 import './styles.css';
 import { Store } from './app/store';
-import { STEPS, stepLabel } from './app/steps';
+import { STEPS, stepLabel, stepSide } from './app/steps';
 import { Viewer } from './ui/viewer';
 import { renderResults } from './ui/results';
+import { StemEditor, withStoredStems } from './ui/stemEditor';
+import { saveFile } from './ui/save';
 import { loadImageFile } from './imaging/load';
 import { generatePhantom } from './imaging/synthetic';
-import { type CaseData, type Side, DEFAULT_OPTIONS, emptyCase } from './planning/types';
+import { type CaseData, type LandmarkKey, type Side, DEFAULT_OPTIONS, emptyCase } from './planning/types';
 import { parseLibrary } from './planning/implants';
-import { add, scale } from './geometry/vec';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 
 const store = new Store();
+store.state.library = { stems: withStoredStems(store.state.library.stems), cups: store.state.library.cups };
 const viewer = new Viewer($('viewer'), store);
 
 // ---------------------------------------------------------------- image I/O
@@ -28,11 +30,13 @@ function onImageLoaded(): void {
     s.status = `DICOM spacing ${img.pixelSpacingMm.toFixed(3)} mm with magnification ${mag.toFixed(2)} applied. A marker ball is more accurate if visible.`;
   }
   $('empty').hidden = true;
-  store.activateStep(store.nextStep());
-  if (img.pixelSpacingMm) store.setStatus(s.status);
-  else store.setStatus('Calibrate first: use the marker ball or a known length (or enter a scale), then place landmarks.');
-  store.recompute();
-  requestAnimationFrame(() => viewer.fit());
+  store.state.activeTool = null;
+  store.setStatus('Detecting landmarks…');
+  requestAnimationFrame(() => {
+    viewer.fit();
+    // Let the image paint before the (≈0.5 s) detection runs.
+    setTimeout(() => store.runAutoDetect(), 30);
+  });
 }
 
 $('file-input').addEventListener('change', async (e) => {
@@ -56,23 +60,8 @@ $('demo-btn').addEventListener('click', () => {
     store.state.image = { name: 'Synthetic demo (left THA, 6 mm short)', gray: ph.image, meta: {} };
     store.state.case.operativeSide = 'L';
     store.state.case.standardOrientation = true;
-    onImageLoaded();
-    const px = (p: { x: number; y: number }) => scale(p, 1 / ph.mmPerPx);
-    const mc = px(ph.markerCenter);
-    store.calibrateMarker(mc, add(mc, { x: ph.markerDiameterMm / 2 / ph.mmPerPx, y: 0 }), ph.markerDiameterMm);
-    for (const side of ['R', 'L'] as Side[]) {
-      const f = ph.femora[side];
-      const l = store.landmarks(side);
-      l.teardrop = px(ph.teardrops[side]);
-      l.lesserTrochanter = px(f.lesserTrochanter);
-      store.detectHead(side, px(add(f.head, { x: 2, y: -2 })));
-      l.canalSeeds = [px(f.axisAtLT), px(add(f.axisAtLT, scale(f.axisDir, 140)))];
-      store.detectCanal(side);
-    }
-    store.state.activeTool = null;
-    store.state.status = 'Demo case loaded with landmarks pre-placed. Drag any handle or change options — the plan updates live.';
-    store.recompute();
     syncControls();
+    onImageLoaded();
   }, 20);
 });
 
@@ -103,6 +92,17 @@ $('orientation').addEventListener('change', (e) => {
 $('cal-marker').addEventListener('click', () => {
   store.markerDiameterMm = Number(($('marker-mm') as HTMLInputElement).value);
   if (store.state.image) store.activateCalibration('marker');
+});
+$('marker-mm').addEventListener('change', () => {
+  const d = Number(($('marker-mm') as HTMLInputElement).value);
+  store.markerDiameterMm = d > 0 ? d : 25;
+  const cal = store.state.case.calibration;
+  if (cal?.method === 'marker' && cal.marker && d > 0) {
+    cal.markerDiameterMm = d;
+    cal.mmPerPx = d / (2 * cal.marker.radius);
+    store.redetectAll();
+    store.recompute();
+  }
 });
 $('cal-line').addEventListener('click', () => {
   store.knownLengthMm = Number(($('line-mm') as HTMLInputElement).value);
@@ -140,30 +140,47 @@ function syncCalibration(): void {
 
 // ---------------------------------------------------------------- landmarks
 
+const STEP_KEY: Record<string, LandmarkKey> = {
+  teardrop: 'teardrop',
+  head: 'head',
+  lt: 'lesserTrochanter',
+  canal: 'canal',
+  acetEdge: 'acetabularEdge',
+  gt: 'greaterTrochanter',
+};
+
 function renderSteps(): void {
   const s = store.state;
   const op = s.case.operativeSide;
   const ol = $('steps');
   ol.innerHTML = '';
+  const cur = store.currentReviewItem();
   for (const step of STEPS) {
     const li = document.createElement('li');
-    const done = store.isStepDone(step);
+    const status = store.stepStatus(step);
+    const side = stepSide(step, op);
+    const key = STEP_KEY[step.kind];
     const active = s.activeTool?.type === 'step' && s.activeTool.step.id === step.id;
-    li.className = `${done ? 'done' : ''} ${active ? 'active' : ''}`;
-    li.innerHTML = `<span class="dot">${done ? '✓' : ''}</span><span class="name">${stepLabel(step, op)}${step.required ? '' : ' <span class="opt">optional</span>'}</span>`;
-    li.title = step.hint;
+    const reviewing = cur?.kind === 'landmark' && cur.side === side && cur.key === key;
+    li.className = `${status ? 'done' : ''} ${status === 'proposed' ? 'proposed' : ''} ${active ? 'active' : ''} ${reviewing ? 'reviewing' : ''}`;
+    li.tabIndex = 0;
+    const mark = status === 'confirmed' ? '✓' : status === 'proposed' ? '?' : '';
+    li.innerHTML = `<span class="dot">${mark}</span><span class="name">${stepLabel(step, op)}${step.required ? '' : ' <span class="opt">optional</span>'}${status === 'proposed' ? ' <span class="opt">check</span>' : ''}</span>`;
+    li.title = status ? 'Show this point to check or adjust it' : step.hint;
     li.addEventListener('click', () => {
       if (!s.image) return;
-      store.activateStep(active ? null : step);
+      if (status) store.reviewGoTo(side, key);
+      else store.activateStep(active ? null : step);
     });
-    if (done) {
+    if (status) {
       const clr = document.createElement('button');
       clr.className = 'clear';
       clr.textContent = '×';
-      clr.title = 'Remove';
+      clr.title = 'Remove and place again';
       clr.addEventListener('click', (e) => {
         e.stopPropagation();
         store.clearStep(step);
+        store.activateStep(step);
       });
       li.appendChild(clr);
     }
@@ -171,12 +188,72 @@ function renderSteps(): void {
   }
 }
 
+// ---------------------------------------------------------------- review of proposed points
+
+const REVIEW_TEXT: Record<LandmarkKey, [string, string]> = {
+  teardrop: ['Teardrop', 'Should sit on the inferior tip of the radiographic teardrop.'],
+  head: ['Femoral head', 'The circle should follow the femoral head outline. Drag the centre or the edge dot.'],
+  lesserTrochanter: ['Lesser trochanter', 'Should sit on the most prominent medial point of the lesser trochanter.'],
+  canal: ['Femoral canal', 'Green dots should sit on the inner cortex. Drag either seed to move the search.'],
+  acetabularEdge: ['Acetabular edge', 'Superolateral edge of the sourcil.'],
+  greaterTrochanter: ['Greater trochanter', 'Tip of the greater trochanter.'],
+};
+
+function renderReviewCard(): void {
+  const r = store.state.review;
+  const item = store.currentReviewItem();
+  const card = $('review-card');
+  card.hidden = !r || !item;
+  if (!r || !item) return;
+  const left = store.unconfirmedCount();
+  $('rc-count').textContent = `${left} to check`;
+  if (item.kind === 'marker') {
+    const cal = store.state.case.calibration;
+    $('rc-title').textContent = `Calibration marker (${cal?.markerDiameterMm ?? 25} mm)`;
+    $('rc-hint').textContent = 'The dashed circle should match the marker ball. Drag its edge dot if needed; change the diameter in the Calibration panel.';
+  } else {
+    const [title, hint] = REVIEW_TEXT[item.key];
+    const isOp = item.side === store.state.case.operativeSide;
+    $('rc-title').textContent = `${title}, ${item.side === 'R' ? 'right' : 'left'}${isOp ? ' (operative)' : ''}`;
+    $('rc-hint').textContent = hint;
+  }
+}
+
+$('rc-ok').addEventListener('click', () => store.reviewOK());
+$('rc-skip').addEventListener('click', () => store.reviewSkip());
+$('rc-all').addEventListener('click', () => store.reviewOKAll());
+$('rc-stop').addEventListener('click', () => store.endReview());
+$('auto-detect').addEventListener('click', () => {
+  if (!store.state.image) return;
+  store.setStatus('Detecting landmarks…');
+  setTimeout(() => store.runAutoDetect(), 20);
+});
+$('review-start').addEventListener('click', () => {
+  const op = store.state.case.operativeSide;
+  for (const step of STEPS) {
+    if (store.stepStatus(step) === 'proposed') {
+      store.reviewGoTo(stepSide(step, op), STEP_KEY[step.kind]);
+      return;
+    }
+  }
+  store.setStatus('Nothing left to check.');
+});
+
 $('next-step').addEventListener('click', () => {
   if (store.state.image) store.activateStep(store.nextStep());
 });
 
 document.addEventListener('keydown', (e) => {
-  if ((e.target as HTMLElement).tagName === 'INPUT') return;
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
+  if (store.state.review && e.key === 'Enter') {
+    e.preventDefault();
+    store.reviewOK();
+    return;
+  }
+  if (e.key === 'Escape' && store.state.review) {
+    store.endReview();
+    return;
+  }
   if (e.key === 'Escape') {
     store.state.activeTool = null;
     store.state.pendingClicks = [];
@@ -217,24 +294,44 @@ function fillSelect(id: string, options: Array<[string, string]>, value: string)
   sel.value = value;
 }
 
+function syncGoalLabels(): void {
+  const o = store.state.case.options;
+  $('goal-ll-label').textContent = o.legLengthGoal.mode === 'match' ? 'Plus extra' : 'Change';
+  $('goal-off-label').textContent = o.offsetGoal.mode === 'match' ? 'Plus extra' : 'Change';
+}
+
 function syncControls(): void {
   const o = store.state.case.options;
   const lib = store.state.library;
   const stem = lib.stems.find((x) => x.id === o.stemFamilyId) ?? lib.stems[0];
   const cup = lib.cups.find((x) => x.id === o.cupFamilyId) ?? lib.cups[0];
+  ($('goal-ll-mode') as HTMLSelectElement).value = o.legLengthGoal.mode;
+  ($('goal-ll-mm') as HTMLInputElement).value = String(o.legLengthGoal.mm);
+  ($('goal-off-mode') as HTMLSelectElement).value = o.offsetGoal.mode;
+  ($('goal-off-mm') as HTMLInputElement).value = String(o.offsetGoal.mm);
+  syncGoalLabels();
   ($('opt-incl') as HTMLInputElement).value = String(o.cupInclination);
   $('opt-incl-val').textContent = `${o.cupInclination}°`;
   ($('opt-placement') as HTMLSelectElement).value = o.cupPlacement;
   ($('opt-oversize') as HTMLInputElement).value = String(o.cupOversize);
   ($('opt-medial') as HTMLInputElement).value = String(o.cupMedialWallOffset);
-  ($('opt-lld') as HTMLInputElement).checked = o.correctLLD;
-  ($('opt-extra') as HTMLInputElement).value = String(o.extraLengthening);
+  fillSelect('opt-stem-family', lib.stems.map((f): [string, string] => [f.id, f.name]), stem.id);
   fillSelect('ovr-cup', [['', 'Auto'], ...cup.sizes.map((z): [string, string] => [String(z.outerDiameter), `${z.outerDiameter} mm`])], o.cupSizeOverride === null ? '' : String(o.cupSizeOverride));
   fillSelect('ovr-stem', [['', 'Auto'], ...stem.sizes.map((z): [string, string] => [z.size, `Size ${z.size}`])], o.stemSizeOverride ?? '');
   const offs = stem.sizes[0].offsets;
   fillSelect('ovr-offset', [['', 'Auto'], ...offs.map((z): [string, string] => [z.id, z.label])], o.offsetOverride ?? '');
-  fillSelect('ovr-head', [['', 'Auto'], ...stem.headLengths.map((h): [string, string] => [String(h), `${h >= 0 ? '+' : ''}${h} mm`])], o.headLengthOverride === null ? '' : String(o.headLengthOverride));
   syncSide();
+}
+
+/** Keep the size/neck selects and the auto/manual labels in step with the plan. */
+function syncPlanState(): void {
+  const o = store.state.case.options;
+  ($('ovr-stem') as HTMLSelectElement).value = o.stemSizeOverride ?? '';
+  ($('ovr-offset') as HTMLSelectElement).value = o.offsetOverride ?? '';
+  $('stem-mode').textContent = o.stemPose ? 'Manual' : 'Auto';
+  $('cup-mode').textContent = o.cupCenter ? 'Manual' : 'Auto';
+  ($('reset-stem') as HTMLButtonElement).disabled = !o.stemPose && !o.stemSizeOverride && !o.offsetOverride;
+  ($('reset-cup') as HTMLButtonElement).disabled = !o.cupCenter;
 }
 
 function bindOption(id: string, apply: (el: HTMLInputElement & HTMLSelectElement) => void, evt = 'change'): void {
@@ -242,39 +339,61 @@ function bindOption(id: string, apply: (el: HTMLInputElement & HTMLSelectElement
   el.addEventListener(evt, () => {
     apply(el);
     if (id === 'opt-incl') $('opt-incl-val').textContent = `${el.value}°`;
+    syncGoalLabels();
     store.recompute();
   });
 }
 const o = () => store.state.case.options;
+bindOption('goal-ll-mode', (el) => (o().legLengthGoal = { mode: el.value as 'match' | 'change', mm: o().legLengthGoal.mm }));
+bindOption('goal-ll-mm', (el) => (o().legLengthGoal = { ...o().legLengthGoal, mm: Number(el.value) || 0 }));
+bindOption('goal-off-mode', (el) => (o().offsetGoal = { mode: el.value as 'match' | 'change', mm: o().offsetGoal.mm }));
+bindOption('goal-off-mm', (el) => (o().offsetGoal = { ...o().offsetGoal, mm: Number(el.value) || 0 }));
 bindOption('opt-incl', (el) => (o().cupInclination = Number(el.value)), 'input');
-bindOption('opt-placement', (el) => (o().cupPlacement = el.value as 'teardrop' | 'native'));
+bindOption('opt-placement', (el) => {
+  o().cupPlacement = el.value as 'teardrop' | 'native';
+  o().cupCenter = null;
+});
 bindOption('opt-oversize', (el) => (o().cupOversize = Number(el.value) || 0));
 bindOption('opt-medial', (el) => (o().cupMedialWallOffset = Number(el.value) || 0));
-bindOption('opt-lld', (el) => (o().correctLLD = el.checked));
-bindOption('opt-extra', (el) => (o().extraLengthening = Number(el.value) || 0));
 bindOption('ovr-cup', (el) => (o().cupSizeOverride = el.value ? Number(el.value) : null));
 bindOption('ovr-stem', (el) => (o().stemSizeOverride = el.value || null));
 bindOption('ovr-offset', (el) => (o().offsetOverride = el.value || null));
-bindOption('ovr-head', (el) => (o().headLengthOverride = el.value ? Number(el.value) : null));
+bindOption('opt-stem-family', (el) => {
+  o().stemFamilyId = el.value;
+  o().stemSizeOverride = null;
+  o().offsetOverride = null;
+  o().stemPose = null;
+  syncControls();
+});
+$('reset-stem').addEventListener('click', () => store.resetStem());
+$('reset-cup').addEventListener('click', () => store.resetCup());
+
+// ---------------------------------------------------------------- stem tables
+
+const stemEditor = new StemEditor(store, () => {
+  syncControls();
+  store.recompute();
+});
+$('edit-stem-table').addEventListener('click', () => stemEditor.open());
 
 // ---------------------------------------------------------------- persistence & export
-
-function download(name: string, href: string): void {
-  const a = document.createElement('a');
-  a.href = href;
-  a.download = name;
-  a.click();
-}
 
 function baseName(): string {
   return (store.state.image?.name ?? 'case').replace(/\.[^.]+$/, '').replace(/[^\w-]+/g, '_');
 }
 
+async function offerFile(filename: string, data: Blob): Promise<void> {
+  const r = await saveFile(filename, data);
+  if (r === 'declined') store.setStatus('Download cancelled.');
+  else if (r === 'unavailable') store.setStatus('Downloads are not available in this view.');
+  else store.setStatus(`Saved ${filename}.`);
+}
+
 $('save-case').addEventListener('click', () => {
   const c = structuredClone(store.state.case);
   for (const side of ['R', 'L'] as Side[]) delete c.landmarks[side].canal; // derived; re-detected on load
-  const blob = new Blob([JSON.stringify({ format: 'hip-templater-case', version: 1, image: store.state.image?.name, case: c }, null, 2)], { type: 'application/json' });
-  download(`${baseName()}.plan.json`, URL.createObjectURL(blob));
+  const json = JSON.stringify({ format: 'hip-templater-case', version: 2, image: store.state.image?.name, case: c }, null, 2);
+  void offerFile(`${baseName()}.plan.json`, new Blob([json], { type: 'application/json' }));
 });
 
 $('load-case').addEventListener('change', async (e) => {
@@ -292,7 +411,7 @@ $('load-case').addEventListener('change', async (e) => {
     store.state.activeTool = null;
     store.state.status = store.state.image
       ? `Loaded case ${file.name}.`
-      : `Loaded case ${file.name} — open the matching image (${json.image ?? 'unknown'}) to see it.`;
+      : `Loaded case ${file.name}. Open the matching image (${json.image ?? 'unknown'}) to see it.`;
     syncControls();
     store.recompute();
   } catch (err) {
@@ -300,17 +419,18 @@ $('load-case').addEventListener('change', async (e) => {
   }
 });
 
-$('export-png').addEventListener('click', () => {
-  const url = viewer.exportPNG();
-  if (url) download(`${baseName()}.template.png`, url);
+$('export-jpeg').addEventListener('click', async () => {
+  const blob = await viewer.exportBlob('image/jpeg');
+  if (blob) await offerFile(`${baseName()}.template.jpg`, blob);
+  else store.setStatus('Open an image first.');
 });
 
 $('print-report').addEventListener('click', () => {
-  const url = viewer.exportPNG();
+  const url = viewer.exportImage('image/png');
   if (!url) return;
   const s = store.state;
   const side = s.case.operativeSide === 'R' ? 'Right' : 'Left';
-  $('print-area').innerHTML = `<h1>THA template — ${side} hip</h1>
+  $('print-area').innerHTML = `<h1>THA template, ${side} hip</h1>
     <p>Image: ${s.image?.name ?? ''} · Generated ${new Date().toLocaleString()}</p>
     <img src="${url}" alt="Templated radiograph" />
     ${renderResults(s)}`;
@@ -324,14 +444,14 @@ $('load-library').addEventListener('change', async (e) => {
   if (!file) return;
   try {
     const lib = parseLibrary(JSON.parse(await file.text()));
-    store.state.library = lib;
+    store.state.library = { stems: [...lib.stems, ...store.state.library.stems.filter((s) => !lib.stems.some((x) => x.id === s.id))], cups: lib.cups };
     const opts = store.state.case.options;
     opts.stemFamilyId = lib.stems[0].id;
     opts.cupFamilyId = lib.cups[0].id;
     opts.stemSizeOverride = null;
     opts.cupSizeOverride = null;
     opts.offsetOverride = null;
-    opts.headLengthOverride = null;
+    opts.stemPose = null;
     syncControls();
     store.state.status = `Implant library loaded: ${lib.stems[0].name} / ${lib.cups[0].name}.`;
     store.recompute();
@@ -340,20 +460,17 @@ $('load-library').addEventListener('change', async (e) => {
   }
 });
 
-$('export-library').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify(store.state.library, null, 2)], { type: 'application/json' });
-  download('implant-library.json', URL.createObjectURL(blob));
-});
-
 // ---------------------------------------------------------------- render loop
 
 store.subscribe((s) => {
   $('status').textContent = s.status;
   $('status').hidden = !s.status;
   renderSteps();
+  renderReviewCard();
   syncCalibration();
   syncSide();
   $('results').innerHTML = renderResults(s);
+  syncPlanState();
 });
 
 syncControls();
