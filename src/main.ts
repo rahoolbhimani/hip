@@ -100,8 +100,19 @@ $('orientation').addEventListener('change', (e) => {
 
 // ---------------------------------------------------------------- calibration
 
-$('cal-marker').addEventListener('click', () => store.state.image && store.activateCalibration('marker'));
-$('cal-line').addEventListener('click', () => store.state.image && store.activateCalibration('line'));
+$('cal-marker').addEventListener('click', () => {
+  store.markerDiameterMm = Number(($('marker-mm') as HTMLInputElement).value);
+  if (store.state.image) store.activateCalibration('marker');
+});
+$('cal-line').addEventListener('click', () => {
+  store.knownLengthMm = Number(($('line-mm') as HTMLInputElement).value);
+  if (store.state.image) store.activateCalibration('line');
+});
+
+// Hosted (sandboxed) builds cannot download files or print, so hide those controls.
+if (import.meta.env.VITE_EMBED) {
+  for (const el of document.querySelectorAll<HTMLElement>('.file-io')) el.hidden = true;
+}
 $('cal-spacing-apply').addEventListener('click', () => {
   const img = store.state.image;
   const mag = Number(($('mag-input') as HTMLInputElement).value);

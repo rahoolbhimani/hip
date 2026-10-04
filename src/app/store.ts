@@ -41,6 +41,9 @@ export class Store {
     window: null,
   };
   private listeners: Listener[] = [];
+  /** Real sizes of the calibration objects, set from the calibration panel. */
+  markerDiameterMm = 25;
+  knownLengthMm = 100;
 
   subscribe(fn: Listener): void {
     this.listeners.push(fn);
@@ -147,8 +150,8 @@ export class Store {
         this.emit();
         return true;
       }
-      if (t.tool === 'marker') this.calibrateMarker(clicks[0], clicks[1]);
-      else this.promptLineLength(clicks[0], clicks[1]);
+      if (t.tool === 'marker') this.calibrateMarker(clicks[0], clicks[1], this.markerDiameterMm);
+      else this.calibrateLine(clicks[0], clicks[1], this.knownLengthMm);
       this.state.pendingClicks = [];
       const next = this.state.case.calibration ? this.nextStep() : null;
       this.state.activeTool = next ? { type: 'step', step: next } : null;
@@ -228,14 +231,13 @@ export class Store {
     return true;
   }
 
-  calibrateMarker(center: Vec2, edge: Vec2, knownDiameterMm?: number): void {
+  calibrateMarker(center: Vec2, edge: Vec2, diameter: number): void {
     const img = this.state.image!.gray;
     const rGuess = Math.hypot(edge.x - center.x, edge.y - center.y);
     const det = detectFemoralHead(img, center, rGuess * 0.7, rGuess * 1.3);
     const circle = det && det.confidence > 0.3 ? det.circle : { center, radius: rGuess };
-    const diameter = knownDiameterMm ?? Number(prompt('Calibration marker diameter (mm):', String(this.state.case.calibration?.markerDiameterMm ?? 25)));
     if (!diameter || diameter <= 0) {
-      this.state.status = 'Calibration cancelled.';
+      this.state.status = 'Enter the marker diameter in mm in the Calibration panel, then try again.';
       return;
     }
     this.state.case.calibration = {
@@ -248,11 +250,9 @@ export class Store {
     this.redetectAll();
   }
 
-  promptLineLength(a: Vec2, b: Vec2): void {
-    const input = prompt('Real length of the measured object (mm):', String(this.state.case.calibration?.lineLengthMm ?? 100));
-    const mm = Number(input);
+  calibrateLine(a: Vec2, b: Vec2, mm: number): void {
     if (!mm || mm <= 0) {
-      this.state.status = 'Calibration cancelled.';
+      this.state.status = 'Enter the known length in mm in the Calibration panel, then try again.';
       return;
     }
     const lenPx = Math.hypot(b.x - a.x, b.y - a.y);

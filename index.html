@@ -12,11 +12,11 @@
       <div class="topbar-actions">
         <label class="btn primary">Open image<input id="file-input" type="file" accept="image/*,.dcm,.dicom,application/dicom" hidden /></label>
         <button id="demo-btn" class="btn">Demo case</button>
-        <span class="sep"></span>
-        <button id="save-case" class="btn">Save case</button>
+        <span class="sep file-io"></span>
+        <button id="save-case" class="btn file-io">Save case</button>
         <label class="btn">Load case<input id="load-case" type="file" accept="application/json,.json" hidden /></label>
-        <button id="export-png" class="btn">Export PNG</button>
-        <button id="print-report" class="btn">Print report</button>
+        <button id="export-png" class="btn file-io">Export PNG</button>
+        <button id="print-report" class="btn file-io">Print report</button>
       </div>
     </header>
 
@@ -37,9 +37,15 @@
         <section>
           <h2>2 · Calibration</h2>
           <div class="cal-status" id="cal-status">Not calibrated</div>
-          <div class="btn-row">
-            <button class="btn small" id="cal-marker">Marker ball</button>
-            <button class="btn small" id="cal-line">Known length</button>
+          <div class="row">
+            <span class="lbl">Marker ball Ø</span>
+            <input type="number" id="marker-mm" step="0.5" min="1" value="25" /><span class="val">mm</span>
+            <button class="btn small" id="cal-marker">Mark</button>
+          </div>
+          <div class="row">
+            <span class="lbl">Known length</span>
+            <input type="number" id="line-mm" step="1" min="1" value="100" /><span class="val">mm</span>
+            <button class="btn small" id="cal-line">Mark</button>
           </div>
           <div id="cal-spacing" class="sub" hidden>
             <div class="row"><span class="lbl">DICOM spacing</span><span id="spacing-val"></span></div>
@@ -112,7 +118,7 @@
           <div class="row"><span class="lbl">Head length</span><select id="ovr-head"></select></div>
           <div class="row">
             <label class="btn small">Load implant library<input id="load-library" type="file" accept="application/json,.json" hidden /></label>
-            <button class="btn small" id="export-library">Export library</button>
+            <button class="btn small file-io" id="export-library">Export library</button>
           </div>
         </section>
         <section>
