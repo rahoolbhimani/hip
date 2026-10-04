@@ -496,7 +496,7 @@ store.subscribe((s) => {
   renderReviewCard();
   syncCalibration();
   syncSide();
-  $('results').innerHTML = renderResults(s, store.detectionErrors());
+  $('results').innerHTML = renderResults(s, store.detectionErrors(), store.planBlockedReason());
   syncPlanState();
 });
 

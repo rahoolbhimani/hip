@@ -41,7 +41,9 @@ Click **Demo case** to load a synthetic radiograph (a left THA with the operativ
 
 Keyboard shortcuts: Enter confirms the point under review, `Esc` stops the review or cancels the current tool, `M` toggles measurements, `f` fits the image to the view.
 
-**Image orientation.** The display is rotated so the inter-teardrop line is horizontal, and the downloaded JPEG is rotated the same way. Untick **Display → Level teardrop line** to see the original orientation. The stem template follows the femoral canal; **Stem orientation → Upright to teardrop line** is available as an alternative.
+**Order of work.** The cup and stem are placed only after the calibration and every landmark are confirmed. Until then the screen shows just the landmarks and the pre-op measurements.
+
+**Image orientation.** Once the landmarks are confirmed, the display is rotated so the inter-teardrop line is horizontal, and the downloaded JPEG is rotated the same way. The image never rotates while you place or drag points; after you drag a teardrop it re-levels when you let go. Untick **Display → Level teardrop line** to see the original orientation. The stem template follows the femoral canal; **Stem orientation → Upright to teardrop line** is available as an alternative.
 
 ## Checking detection accuracy
 

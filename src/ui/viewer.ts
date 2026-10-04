@@ -127,7 +127,9 @@ export class Viewer {
 
   /** Rotation that makes the inter-teardrop line horizontal (0 when off or unknown). */
   targetRotation(): number {
-    if (!this.levelTeardrops) return 0;
+    // Level only once the landmarks are verified, so the image never turns
+    // while points are still being placed or checked.
+    if (!this.levelTeardrops || !this.store.landmarksVerified()) return 0;
     const { R, L } = this.store.state.case.landmarks;
     if (!R.teardrop || !L.teardrop) return 0;
     const [a, b] = R.teardrop.x < L.teardrop.x ? [R.teardrop, L.teardrop] : [L.teardrop, R.teardrop];
@@ -405,6 +407,7 @@ export class Viewer {
     this.drag = null;
     if (!d) return;
     if (d.kind === 'handle' && d.moved) d.handle?.done?.();
+    if (d.moved) this.render();
     if (d.kind === 'pan' && !d.moved && e.button === 0) {
       this.store.handleClick(this.toImage(this.screenPoint(e)));
     }
@@ -452,7 +455,8 @@ export class Viewer {
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     this.ensureBitmap(s);
     if (!this.bitmap) return;
-    this.syncRotation();
+    // Never rotate under the cursor: wait until any drag has finished.
+    if (!this.drag) this.syncRotation();
     const zc = this.zoom * Math.cos(this.rot);
     const zs = this.zoom * Math.sin(this.rot);
     ctx.setTransform(zc, zs, -zs, zc, this.tx, this.ty);

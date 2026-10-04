@@ -77,8 +77,30 @@ export class Store {
   recompute(): void {
     const c = this.state.case;
     this.state.measurements = c.calibration ? measure(c) : null;
-    this.state.plan = c.calibration ? buildPlan(c, this.state.library) : null;
+    // Implants are placed only once every landmark has been verified.
+    this.state.plan = this.landmarksVerified() ? buildPlan(c, this.state.library) : null;
     this.emit();
+  }
+
+  /** True when calibration and all required landmarks are confirmed and no review is open. */
+  landmarksVerified(): boolean {
+    const c = this.state.case;
+    if (!c.calibration || c.calibration.proposed || this.state.review) return false;
+    if (this.unconfirmedCount() > 0) return false;
+    return STEPS.filter((st) => st.required).every((st) => this.isStepDone(st));
+  }
+
+  /** Why implants are not shown yet (null when they are). */
+  planBlockedReason(): string | null {
+    if (this.landmarksVerified()) return null;
+    const c = this.state.case;
+    if (!c.calibration) return 'Calibrate the image to continue.';
+    const left = this.unconfirmedCount();
+    if (left > 0) return `Confirm the ${left} proposed point${left === 1 ? '' : 's'} (marked "?") to place the implants.`;
+    const missing = STEPS.filter((st) => st.required && !this.isStepDone(st));
+    if (missing.length) return `Place the remaining required landmarks to place the implants (${missing.length} left).`;
+    if (this.state.review) return 'Finish the review to place the implants.';
+    return null;
   }
 
   // ------------------------------------------------------------ auto-proposals & review

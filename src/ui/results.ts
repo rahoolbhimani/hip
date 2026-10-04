@@ -6,7 +6,7 @@ const signed = (v: number | undefined, unit = ' mm'): string => (v === undefined
 const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 const sideName = (s: 'R' | 'L'): string => (s === 'R' ? 'Right' : 'Left');
 
-export function renderResults(s: AppState, errors: Array<{ side: 'R' | 'L'; key: string; mm: number }> = []): string {
+export function renderResults(s: AppState, errors: Array<{ side: 'R' | 'L'; key: string; mm: number }> = [], blocked: string | null = null): string {
   const m = s.measurements;
   const p = s.plan;
   if (!s.image) return '<p class="hint">Open an image to begin.</p>';
@@ -14,6 +14,7 @@ export function renderResults(s: AppState, errors: Array<{ side: 'R' | 'L'; key:
   if (!m) return '<p class="hint">Place both teardrops to establish the pelvic reference line.</p>';
 
   const out: string[] = [];
+  if (blocked) out.push(`<div class="missing">${esc(blocked)}</div>`);
   if (p?.missing.length) out.push(`<div class="missing">To complete the plan, place: ${p.missing.map(esc).join(', ')}.</div>`);
 
   if (p?.cup || p?.stem) {
