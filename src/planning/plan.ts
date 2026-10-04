@@ -82,7 +82,7 @@ export interface StemCandidate {
   size: StemSize;
   offset: StemOffsetOption;
   pose: StemPose;
-  /** How far (mm) the auto plan seats the stem above full cortical engagement. */
+  /** How far (mm) the stem sits above full cortical contact (negative = deeper). */
   proud: number;
   /** Prosthetic head centre (0 mm head) in the femoral frame (m medial, d distal), mm. */
   headCenter: Vec2;
@@ -111,6 +111,9 @@ export interface StemPlan {
   resectionAboveLT: number;
   fill: FillSample[];
   alternatives: StemCandidate[];
+  /** Canal fit of the chosen size (the basis for the size choice). */
+  fit: SizeFit;
+  sizeReason: string;
 }
 
 export interface PlanResult {
@@ -147,8 +150,11 @@ const MIN_RESECTION_MM = 0;
 const MIN_ENGAGE_STEM_LEVEL = 20;
 /** Femoral levels (mm below the LT) from which the canal profile is trusted. */
 const MIN_ENGAGE_FEMUR_LEVEL = 5;
-/** Largest amount the auto plan may seat a stem proud of full engagement (mm). */
-const MAX_PROUD_MM = 4;
+/** Seating range explored to meet the leg-length goal, relative to full cortical contact (mm). */
+const MAX_PROUD_SEAT_MM = 8;
+const MAX_DEEP_SEAT_MM = 2;
+/** Warn when the stem has to sit more proud than this (mm). */
+const PROUD_WARN_MM = 4;
 
 /** Map a stem-local point (m medial, d distal from the resection level) into the femoral frame. */
 export function stemToFemur(pose: StemPose, q: Vec2): Vec2 {
@@ -250,63 +256,91 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   const headRadiusMm = opL.head.radius * mmPerPx;
   const maxResection = Math.max(5, Math.min(DEFAULT_MAX_RESECTION_MM, -nativeHeadF.y - headRadiusMm));
 
-  const candidates: StemCandidate[] = [];
+  // ---- 1. Size: chosen by canal fit only (goals play no part).
   const manualPose = o.stemPose;
-  const sizes = o.stemSizeOverride ? stemFamily.sizes.filter((s) => s.size === o.stemSizeOverride) : stemFamily.sizes;
-  for (const size of sizes) {
-    const engage = engagementDepth(size, profile, maxResection, autoTilt);
-    // Auto: from full cortical engagement up to MAX_PROUD_MM proud, so the
-    // leg-length goal can be met between discrete sizes.
-    const seats: Array<{ pose: StemPose; proud: number }> = manualPose
-      ? [{ pose: manualPose, proud: 0 }]
-      : [];
-    if (!manualPose) {
-      for (let proud = 0; proud <= MAX_PROUD_MM + 1e-9; proud += 0.5) {
-        const depth = engage.depth - proud;
-        if (proud > 0 && (engage.tooLarge || depth < -maxResection)) break;
-        seats.push({ pose: centredPose(size, profile, depth, autoTilt), proud });
-      }
-    }
-    const offsets = o.offsetOverride ? size.offsets.filter((x) => x.id === o.offsetOverride) : size.offsets;
-    for (const { pose, proud } of seats) {
-      for (const offset of offsets) {
-        const hc = stemToFemur(pose, neckHeadCenter(offset));
-        const recon = reconstruct(hc);
-        const resectionAbove = -pose.depth;
-        let score = (recon.total.ll - targetLL) ** 2 + 0.5 * (recon.total.off - targetOffset) ** 2;
-        score += 0.15 * proud * proud; // prefer a fully seated stem
-        if (resectionAbove < 5) score += 2 * (5 - resectionAbove) ** 2;
-        if (resectionAbove > 20) score += 0.5 * (resectionAbove - 20) ** 2;
-        if (engage.beyondData) score += 4;
-        candidates.push({
-          size,
-          offset,
-          pose,
-          proud,
-          headCenter: hc,
-          recon,
-          score,
-          beyondCanalData: engage.beyondData,
-          plausibleSeat: manualPose ? true : !engage.tooLarge && resectionAbove >= MIN_RESECTION_MM,
-        });
-      }
-    }
+  const fits = stemFamily.sizes.map((z) => sizeFit(z, profile, maxResection, autoTilt));
+  const seatOk = (f: SizeFit) => !f.engage.tooLarge && -f.engage.depth >= MIN_RESECTION_MM;
+  let fit: SizeFit | undefined;
+  let sizeReason: string;
+  if (o.stemSizeOverride) {
+    fit = fits.find((f) => f.size.size === o.stemSizeOverride);
+    sizeReason = 'Size chosen manually.';
+  } else {
+    const good = fits.filter((f) => seatOk(f) && !f.potsDistally);
+    fit = good[good.length - 1];
+    sizeReason = fit
+      ? 'Largest size that fills the metaphysis without locking distally.'
+      : 'No size fills the metaphysis without distal fixation; using the largest that seats.';
+    if (!fit) fit = fits.filter(seatOk)[0] ?? fits[0];
   }
-  if (candidates.length === 0) {
-    warnings.push('No stem matches the selected size and neck.');
+  if (!fit) {
+    warnings.push('No stem matches the selected size.');
     return result;
   }
-  candidates.sort((a, b) => a.score - b.score);
-  const plausible = candidates.filter((x) => x.plausibleSeat);
-  const pool = plausible.length ? plausible : candidates;
-  const chosen = pool[0];
+  const chosenFit = fit;
+
+  // ---- 2. Seat height (neck cut) and neck offset: chosen to meet the goals.
+  const seat = (f: SizeFit, offsetIds: string[] | null): StemCandidate | null => {
+    const offsets = f.size.offsets.filter((x) => !offsetIds || offsetIds.includes(x.id));
+    const poses: Array<{ pose: StemPose; proud: number }> = [];
+    if (manualPose) poses.push({ pose: manualPose, proud: 0 });
+    else {
+      const lo = Math.max(-maxResection, f.engage.depth - MAX_PROUD_SEAT_MM);
+      const hi = Math.min(-MIN_RESECTION_MM, f.engage.depth + MAX_DEEP_SEAT_MM);
+      for (let d = lo; d <= hi + 1e-9; d += 0.5) poses.push({ pose: centredPose(f.size, profile, d, autoTilt), proud: f.engage.depth - d });
+      if (!poses.length) poses.push({ pose: centredPose(f.size, profile, f.engage.depth, autoTilt), proud: 0 });
+    }
+    let best: StemCandidate | null = null;
+    for (const offset of offsets) {
+      for (const { pose, proud } of poses) {
+        const hc = stemToFemur(pose, neckHeadCenter(offset));
+        const recon = reconstruct(hc);
+        let score = (recon.total.ll - targetLL) ** 2 + 0.5 * (recon.total.off - targetOffset) ** 2;
+        // Prefer full seating: small cost for sitting proud, larger for sinking past contact.
+        score += proud >= 0 ? 0.02 * proud * proud : 0.5 * proud * proud;
+        if (!best || score < best.score) {
+          best = {
+            size: f.size,
+            offset,
+            pose,
+            proud,
+            headCenter: hc,
+            recon,
+            score,
+            beyondCanalData: f.engage.beyondData,
+            plausibleSeat: manualPose ? true : seatOk(f),
+          };
+        }
+      }
+    }
+    return best;
+  };
+  const offsetIds = o.offsetOverride ? [o.offsetOverride] : null;
+  const chosen = seat(chosenFit, offsetIds);
+  if (!chosen) {
+    warnings.push('No stem matches the selected neck.');
+    return result;
+  }
   if (!chosen.plausibleSeat) {
     warnings.push(
       o.stemSizeOverride
         ? `Stem size ${o.stemSizeOverride} cannot seat with the neck cut between the lesser trochanter and the head. Choose another size or drag the stem.`
-        : 'No stem size seats with the neck cut between the lesser trochanter and the head. The detected canal is probably too narrow: check the green canal points and move the canal seeds into the medullary canal, or drag the stem into place.',
+        : 'No stem size seats with the neck cut between the lesser trochanter and the head. The detected canal is probably too narrow: check the canal points and move the canal seeds into the medullary canal, or drag the stem into place.',
     );
   }
+  if (!o.stemSizeOverride && chosenFit.potsDistally) warnings.push(sizeReason);
+  if (!manualPose && chosen.proud > PROUD_WARN_MM) {
+    warnings.push(`To meet the leg-length goal the stem sits ${chosen.proud.toFixed(1)} mm proud of full cortical contact; it may be undersized at that level.`);
+  }
+  // Alternatives: the other neck on the same size, and the neighbouring sizes at their best seat.
+  const idx = fits.indexOf(chosenFit);
+  const alternatives = manualPose
+    ? []
+    : [
+        seat(chosenFit, chosenFit.size.offsets.filter((x) => x.id !== chosen.offset.id).map((x) => x.id)),
+        idx > 0 ? seat(fits[idx - 1], offsetIds) : null,
+        idx < fits.length - 1 ? seat(fits[idx + 1], offsetIds) : null,
+      ].filter((x): x is StemCandidate => !!x && x.offset !== undefined);
   const fill = fillSamples(chosen.size, chosen.pose, profile);
   const breaches = fill.filter((f) => f.breach);
   if (breaches.length) {
@@ -318,7 +352,9 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
     manual: !!manualPose,
     resectionAboveLT: -chosen.pose.depth,
     fill,
-    alternatives: manualPose ? [] : uniqueBySize(pool).slice(1, 4),
+    alternatives,
+    fit: chosenFit,
+    sizeReason,
   };
   result.reconstruction = chosen.recon;
   result.predictedLegLengthChange = chosen.recon.total.ll;
@@ -326,21 +362,10 @@ export function buildPlan(c: CaseData, lib: ImplantLibrary): PlanResult | null {
   if (m.legLengthDifference !== undefined) result.postopLegLengthDifference = m.legLengthDifference + chosen.recon.total.ll;
   if (m.op.globalOffset !== undefined) result.postopGlobalOffset = m.op.globalOffset + chosen.recon.total.off;
   if (chosen.beyondCanalData) warnings.push('Stem extends beyond the detected canal. Move the distal canal seed further down for a reliable size.');
-  if (!manualPose && Math.abs(chosen.recon.total.ll - targetLL) > 3) {
-    warnings.push(`Best combination misses the leg-length target by ${(chosen.recon.total.ll - targetLL).toFixed(1)} mm.`);
+  if (!manualPose && Math.abs(chosen.recon.total.ll - targetLL) > 2) {
+    warnings.push(`The leg-length goal can't be reached within this stem's seating range (misses by ${(chosen.recon.total.ll - targetLL).toFixed(1)} mm). Consider moving the cup or changing the goal.`);
   }
   return result;
-}
-
-function uniqueBySize(cands: StemCandidate[]): StemCandidate[] {
-  const seen = new Set<string>();
-  const out: StemCandidate[] = [];
-  for (const cnd of cands) {
-    if (seen.has(cnd.size.size)) continue;
-    seen.add(cnd.size.size);
-    out.push(cnd);
-  }
-  return out;
 }
 
 /** Stem vs canal width at standard levels below the cut, for any pose. */
@@ -471,16 +496,27 @@ export function centredPose(size: StemSize, profile: CanalProfileSample[], depth
  * (`maxResectionAboveLT`, below the femoral head). If the stem already
  * breaches the canal there it is too large for this femur (`tooLarge`).
  */
+export interface Engagement {
+  /** Seat depth at full cortical contact (resection level below the LT, mm). */
+  depth: number;
+  beyondData: boolean;
+  /** Breaches the canal even at the highest allowed seat. */
+  tooLarge: boolean;
+  /** Stem level (mm below the cut) where cortical contact first occurs; null if never. */
+  bindLevel: number | null;
+}
+
 export function engagementDepth(
   size: StemSize,
   profile: CanalProfileSample[],
   maxResectionAboveLT = DEFAULT_MAX_RESECTION_MM,
   tilt = 0,
-): { depth: number; beyondData: boolean; tooLarge: boolean } {
+): Engagement {
   const len = stemLength(size);
   const lastD = profile[profile.length - 1].d;
   const cosT = Math.cos(rad(tilt));
-  const fits = (depth: number): boolean => {
+  /** Returns the first stem level that breaches the canal, or null if the stem fits. */
+  const breachAt = (depth: number): number | null => {
     const pose = centredPose(size, profile, depth, tilt);
     for (let ds = MIN_ENGAGE_STEM_LEVEL; ds <= len; ds += 2) {
       const ctr = stemToFemur(pose, { x: 0, y: ds });
@@ -497,15 +533,58 @@ export function engagementDepth(
       if (!cc || !cm || !cl) continue;
       // Total mediolateral width is the primary criterion; the per-side check
       // is looser because it depends on the fitted axis position.
-      if ((med.x - lat.x) * cosT > cc.medial + cc.lateral + ENGAGE_TOLERANCE_MM) return false;
-      if (med.x > cm.medial + SIDE_TOLERANCE_MM || -lat.x > cl.lateral + SIDE_TOLERANCE_MM) return false;
+      if ((med.x - lat.x) * cosT > cc.medial + cc.lateral + ENGAGE_TOLERANCE_MM) return ds;
+      if (med.x > cm.medial + SIDE_TOLERANCE_MM || -lat.x > cl.lateral + SIDE_TOLERANCE_MM) return ds;
     }
-    return true;
+    return null;
   };
   let depth = -maxResectionAboveLT;
-  if (!fits(depth)) return { depth, beyondData: false, tooLarge: true };
-  while (depth < 60 && fits(depth + 0.5)) depth += 0.5;
-  return { depth, beyondData: depth + len * cosT > lastD, tooLarge: false };
+  const first = breachAt(depth);
+  if (first !== null) return { depth, beyondData: false, tooLarge: true, bindLevel: first };
+  let bindLevel: number | null = null;
+  while (depth < 60) {
+    const b = breachAt(depth + 0.5);
+    if (b !== null) {
+      bindLevel = b;
+      break;
+    }
+    depth += 0.5;
+  }
+  return { depth, beyondData: depth + len * cosT > lastD, tooLarge: false, bindLevel };
+}
+
+/** How a size fits the canal at full engagement — the basis for choosing the size. */
+export interface SizeFit {
+  size: StemSize;
+  engage: Engagement;
+  /** Where along the stem it first contacts cortex, as a fraction of stem length. */
+  bindFraction: number | null;
+  /** Stem / canal width in the metaphysis (20 mm below the cut). */
+  metaphysealFill: number | null;
+  /** Stem / canal width in the distal stem (80 % of its length). */
+  distalFill: number | null;
+  /** Locks distally before filling the metaphysis. */
+  potsDistally: boolean;
+}
+
+/** Contact beyond this fraction of the stem length counts as distal (diaphyseal) fixation. */
+const DISTAL_BIND_FRACTION = 0.6;
+/** Distal fill above this means the stem is too big distally. */
+const MAX_DISTAL_FILL = 0.92;
+
+export function sizeFit(size: StemSize, profile: CanalProfileSample[], maxResection: number, tilt: number): SizeFit {
+  const engage = engagementDepth(size, profile, maxResection, tilt);
+  const len = stemLength(size);
+  const pose = centredPose(size, profile, engage.depth, tilt);
+  const fillAt = (ds: number): number | null => {
+    const w = stemWidthAt(size, ds);
+    const c = canalAt(profile, stemToFemur(pose, { x: 0, y: ds }).y);
+    return w && c ? (w.medial + w.lateral) / (c.medial + c.lateral) : null;
+  };
+  const bindFraction = engage.bindLevel === null ? null : engage.bindLevel / len;
+  const distalFill = fillAt(0.8 * len);
+  const potsDistally = (bindFraction !== null && bindFraction > DISTAL_BIND_FRACTION) || (distalFill !== null && distalFill > MAX_DISTAL_FILL);
+  return { size, engage, bindFraction, metaphysealFill: fillAt(20), distalFill, potsDistally };
 }
 
 /**

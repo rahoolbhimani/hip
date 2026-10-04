@@ -56,7 +56,8 @@ export function renderResults(s: AppState, errors: Array<{ side: 'R' | 'L'; key:
       out.push(row('COR shift', `${p.corShift.x <= 0 ? 'medial' : 'lateral'} ${Math.abs(p.corShift.x).toFixed(1)}, ${p.corShift.y <= 0 ? 'inferior' : 'superior'} ${Math.abs(p.corShift.y).toFixed(1)} mm`));
     }
     out.push(row('Neck cut above LT', f1(p.stem.resectionAboveLT)));
-    if (p.stem.chosen.proud >= 0.5) out.push(row('Seating', `${p.stem.chosen.proud.toFixed(1)} mm proud of full cortical contact`));
+    const pr = p.stem.chosen.proud;
+    out.push(row('Seating', Math.abs(pr) < 0.5 ? 'at full cortical contact' : `${Math.abs(pr).toFixed(1)} mm ${pr > 0 ? 'proud of' : 'deeper than'} full contact`));
     const pose = p.stem.chosen.pose;
     if (p.stem.manual && (Math.abs(pose.tilt) >= 0.5 || Math.abs(pose.shift) >= 0.5)) {
       out.push(row('Stem alignment', `${Math.abs(pose.tilt).toFixed(1)}° ${pose.tilt >= 0 ? 'varus' : 'valgus'}, ${Math.abs(pose.shift).toFixed(1)} mm ${pose.shift >= 0 ? 'medial' : 'lateral'}`));
@@ -65,6 +66,13 @@ export function renderResults(s: AppState, errors: Array<{ side: 'R' | 'L'; key:
       const u = p.cup.lateralUncoverage;
       out.push(row('Lateral cup uncoverage', u > 0 ? `<span class="${u > 8 ? 'delta-warn' : ''}">${u.toFixed(1)} mm</span>` : 'covered'));
     }
+    out.push('</table>');
+
+    const fit = p.stem.fit;
+    const pctOf = (v: number | null) => (v === null ? '—' : `${Math.round(v * 100)}%`);
+    out.push(`<h3>Stem size by canal fit</h3><p class="hint">${esc(p.stem.sizeReason)}</p><table class="kv">`);
+    out.push(row('Metaphyseal fill (20 mm below cut)', pctOf(fit.metaphysealFill)));
+    out.push(row('Distal fill (80% of length)', fit.potsDistally ? `<span class="delta-warn">${pctOf(fit.distalFill)} · locks distally</span>` : pctOf(fit.distalFill)));
     out.push('</table>');
 
     if (p.stem.fill.length) {
@@ -76,7 +84,7 @@ export function renderResults(s: AppState, errors: Array<{ side: 'R' | 'L'; key:
       out.push('</table>');
     }
     if (p.stem.alternatives.length) {
-      out.push('<h3>Alternatives</h3><table class="kv">');
+      out.push('<h3>Alternatives (each at its best seat)</h3><table class="kv">');
       for (const a of p.stem.alternatives) {
         out.push(row(`Size ${esc(a.size.size)} ${a.offset.id === 'high' ? 'high offset' : 'standard'}`, `LL ${signed(a.recon.total.ll)}, offset ${signed(a.recon.total.off)}`));
       }

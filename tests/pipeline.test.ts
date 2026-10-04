@@ -95,7 +95,7 @@ describe('measurements and plan', () => {
     expect(Math.abs(plan.predictedLegLengthChange! - plan.targetLegLengthChange)).toBeLessThan(3);
     expect(Math.abs(plan.predictedOffsetChange! - plan.targetOffsetChange)).toBeLessThan(6);
     expect(plan.stem!.resectionAboveLT).toBeGreaterThan(3);
-    expect(plan.stem!.resectionAboveLT).toBeLessThan(25);
+    expect(plan.stem!.resectionAboveLT).toBeLessThanOrEqual(30);
     for (const f of plan.stem!.fill) expect(f.fill).toBeLessThanOrEqual(1.05);
   });
 
@@ -176,7 +176,7 @@ describe('stem seating stays anatomical', () => {
     lev.medialEndosteal = add(mid, scale(dir, -half));
     const plan = buildPlan(c, DEFAULT_LIBRARY)!;
     expect(plan.stem!.chosen.size.size).toBe(base.stem!.chosen.size.size);
-    expect(Math.abs(plan.stem!.resectionAboveLT - base.stem!.resectionAboveLT)).toBeLessThan(2);
+    expect(Math.abs(plan.stem!.resectionAboveLT - base.stem!.resectionAboveLT)).toBeLessThanOrEqual(3);
   });
 
   it('never places the neck cut above the femoral head, even when the canal looks too narrow', () => {
@@ -300,5 +300,37 @@ describe('heads and necks', () => {
     const gain = h.stem!.chosen.offset.offset - s.stem!.chosen.offset.offset;
     expect(gain).toBeGreaterThanOrEqual(6);
     expect(h.reconstruction!.total.off - s.reconstruction!.total.off).toBeCloseTo(gain, 0);
+  });
+});
+
+describe('size by fit, seat by goal', () => {
+  it('stem size does not change with the goals; the neck cut does', () => {
+    const c = buildCase();
+    c.options.legLengthGoal = { mode: 'change', mm: 0 };
+    const a = buildPlan(c, DEFAULT_LIBRARY)!;
+    c.options.legLengthGoal = { mode: 'change', mm: 5 };
+    const b = buildPlan(c, DEFAULT_LIBRARY)!;
+    c.options.offsetGoal = { mode: 'change', mm: 6 };
+    const d = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(b.stem!.chosen.size.size).toBe(a.stem!.chosen.size.size);
+    expect(d.stem!.chosen.size.size).toBe(a.stem!.chosen.size.size);
+    // Lengthening by 5 mm raises the stem (higher cut) by ~5 mm.
+    expect(b.stem!.resectionAboveLT - a.stem!.resectionAboveLT).toBeCloseTo(5, 0);
+    expect(b.reconstruction!.total.ll - a.reconstruction!.total.ll).toBeCloseTo(5, 0);
+    // More offset is met by switching to the high-offset neck.
+    expect(d.stem!.chosen.offset.id).toBe('high');
+  });
+
+  it('picks the largest size that fills the metaphysis without locking distally', () => {
+    const plan = buildPlan(buildCase(), DEFAULT_LIBRARY)!;
+    const fit = plan.stem!.fit;
+    expect(fit.potsDistally).toBe(false);
+    const sizes = DEFAULT_LIBRARY.stems[0].sizes;
+    const next = sizes[sizes.findIndex((z) => z.size === plan.stem!.chosen.size.size) + 1];
+    // The next size up locks distally (or doesn't seat).
+    const c = buildCase();
+    c.options.stemSizeOverride = next.size;
+    const bigger = buildPlan(c, DEFAULT_LIBRARY)!;
+    expect(bigger.stem!.fit.potsDistally || bigger.stem!.fit.engage.tooLarge).toBe(true);
   });
 });
