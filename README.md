@@ -41,7 +41,7 @@ Click **Demo case** to load a synthetic radiograph (a left THA with the operativ
 
 Keyboard shortcuts: Enter confirms the point under review, `Esc` stops the review or cancels the current tool, `M` toggles measurements, `f` fits the image to the view.
 
-**Stem orientation.** By default the stem template is upright to the inter-teardrop line: its axis is perpendicular to the line and its horizontal reference is parallel to it. The femoral shaft is usually adducted a few degrees, so an upright stem crosses the canal at that angle and may seat smaller than a canal-aligned one. Use **Stem orientation → Along femoral canal** to compare.
+**Image orientation.** The display is rotated so the inter-teardrop line is horizontal, and the downloaded JPEG is rotated the same way. Untick **Display → Level teardrop line** to see the original orientation. The stem template follows the femoral canal; **Stem orientation → Upright to teardrop line** is available as an alternative.
 
 ## Checking detection accuracy
 

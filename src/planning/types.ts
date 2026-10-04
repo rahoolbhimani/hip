@@ -114,7 +114,7 @@ export const DEFAULT_OPTIONS: PlanOptions = {
   cupPlacement: 'teardrop',
   legLengthGoal: { mode: 'match', mm: 0 },
   offsetGoal: { mode: 'match', mm: 0 },
-  stemAlignment: 'pelvis',
+  stemAlignment: 'canal',
   cupSizeOverride: null,
   stemSizeOverride: null,
   offsetOverride: null,

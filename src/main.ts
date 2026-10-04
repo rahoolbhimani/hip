@@ -273,6 +273,10 @@ $('contrast').addEventListener('input', (e) => {
   viewer.contrast = Number((e.target as HTMLInputElement).value);
   viewer.render();
 });
+$('level-td').addEventListener('change', (e) => {
+  viewer.levelTeardrops = (e.target as HTMLInputElement).checked;
+  viewer.render();
+});
 $('invert').addEventListener('change', (e) => {
   viewer.invert = (e.target as HTMLInputElement).checked;
   viewer.render();

@@ -3,7 +3,7 @@
  * All drawing happens in IMAGE pixel space; `k` is the number of image px per
  * screen px so line widths and labels stay constant on screen.
  */
-import { type Vec2, type Frame, fromFrame, scale, add, sub, norm, perp, rad } from '../geometry/vec';
+import { type Vec2, type Frame, fromFrame, scale, add, sub, norm, perp, rad, rotate } from '../geometry/vec';
 import type { AppState } from '../app/store';
 import { stemOutlineLocal, neckCutLocal, stemToFemur } from '../planning/plan';
 import { neckHeadCenter } from '../planning/implants';
@@ -47,16 +47,23 @@ export interface LabelBox {
 export interface LabelLayer {
   offsets: Record<string, Vec2>;
   boxes: LabelBox[];
+  /** Rotation (rad) applied to text so it stays upright on a rotated display. */
+  textAngle?: number;
 }
+
+/** Current text counter-rotation, set at the start of each drawOverlay call. */
+let textAngle = 0;
 
 export function drawOverlay(ctx: CanvasRenderingContext2D, s: AppState, k: number, layers: Layers, labels: LabelLayer = { offsets: {}, boxes: [] }): void {
   const c = s.case;
   const mmPerPx = c.calibration?.mmPerPx;
   const toPx = (pMm: Vec2): Vec2 => scale(pMm, 1 / (mmPerPx ?? 1));
   labels.boxes.length = 0;
+  textAngle = labels.textAngle ?? 0;
   const mlabel = (id: string, anchor: Vec2, text: string, color: string, dflt: Vec2 = { x: 8, y: -8 }): void => {
     const off = labels.offsets[id] ?? { x: 0, y: 0 };
-    const pos = add(anchor, scale(add(dflt, off), k));
+    // Offsets are in screen directions; undo the display rotation.
+    const pos = add(anchor, scale(rotate(add(dflt, off), textAngle), k));
     const box = tag(ctx, pos, text, color, k);
     labels.boxes.push({ id, ...box });
     if (Math.hypot(off.x, off.y) > 12) {
@@ -396,6 +403,9 @@ function tag(ctx: CanvasRenderingContext2D, p: Vec2, text: string, color: string
   const w = ctx.measureText(text).width + 10 * k;
   const h = 18 * k;
   const box = { x: p.x - 5 * k, y: p.y - 13 * k, w, h };
+  ctx.translate(p.x, p.y);
+  ctx.rotate(textAngle);
+  ctx.translate(-p.x, -p.y);
   ctx.fillStyle = 'rgba(5,7,10,0.72)';
   ctx.strokeStyle = color;
   ctx.globalAlpha = 1;
@@ -414,6 +424,9 @@ function tag(ctx: CanvasRenderingContext2D, p: Vec2, text: string, color: string
 
 function label(ctx: CanvasRenderingContext2D, p: Vec2, text: string, color: string, k: number): void {
   ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(textAngle);
+  ctx.translate(-p.x, -p.y);
   ctx.font = `${12 * k}px system-ui, sans-serif`;
   ctx.lineWidth = 3 * k;
   ctx.strokeStyle = 'rgba(0,0,0,0.85)';

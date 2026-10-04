@@ -78,6 +78,7 @@
           <div class="row"><span class="lbl">Brightness</span><input type="range" id="brightness" min="-0.5" max="0.5" step="0.01" value="0" /></div>
           <div class="row"><span class="lbl">Contrast</span><input type="range" id="contrast" min="0.4" max="3" step="0.05" value="1" /></div>
           <label class="check"><input type="checkbox" id="invert" /> Invert</label>
+          <label class="check"><input type="checkbox" id="level-td" checked /> Level teardrop line (rotate image)</label>
           <div class="layers">
             <label class="check"><input type="checkbox" data-layer="measurements" checked /> Measurements</label>
             <label class="check"><input type="checkbox" data-layer="canal" /> Canal points</label>
@@ -144,8 +145,8 @@
           <div class="row">
             <span class="lbl">Stem orientation</span>
             <select id="opt-align">
-              <option value="pelvis">Upright to teardrop line</option>
               <option value="canal">Along femoral canal</option>
+              <option value="pelvis">Upright to teardrop line</option>
             </select>
           </div>
           <div class="row"><span class="lbl">Stem size</span><select id="ovr-stem"></select></div>

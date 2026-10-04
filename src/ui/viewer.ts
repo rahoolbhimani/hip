@@ -27,6 +27,10 @@ export class Viewer {
   private bitmapSource: GrayImage | null = null;
   private bitmapWindow = '';
   private zoom = 1;
+  /** Display rotation (rad) applied to the image; levels the teardrop line. */
+  private rot = 0;
+  /** Rotate the display so the inter-teardrop line is horizontal. */
+  levelTeardrops = true;
   private tx = 0;
   private ty = 0;
   private drag: {
@@ -90,12 +94,57 @@ export class Viewer {
   fit(): void {
     const img = this.store.state.image?.gray;
     if (!img) return;
+    this.rot = this.targetRotation();
     const w = this.canvas.width;
     const h = this.canvas.height;
-    this.zoom = Math.min(w / img.width, h / img.height) * 0.95;
-    this.tx = (w - img.width * this.zoom) / 2;
-    this.ty = (h - img.height * this.zoom) / 2;
+    const corners = [
+      { x: 0, y: 0 },
+      { x: img.width, y: 0 },
+      { x: 0, y: img.height },
+      { x: img.width, y: img.height },
+    ].map((p) => this.rotateVec(p, this.rot));
+    const minX = Math.min(...corners.map((p) => p.x));
+    const maxX = Math.max(...corners.map((p) => p.x));
+    const minY = Math.min(...corners.map((p) => p.y));
+    const maxY = Math.max(...corners.map((p) => p.y));
+    this.zoom = Math.min(w / (maxX - minX), h / (maxY - minY)) * 0.95;
+    this.tx = (w - (maxX - minX) * this.zoom) / 2 - minX * this.zoom;
+    this.ty = (h - (maxY - minY) * this.zoom) / 2 - minY * this.zoom;
     this.render();
+  }
+
+  private rotateVec(p: Vec2, a: number): Vec2 {
+    const c = Math.cos(a);
+    const sn = Math.sin(a);
+    return { x: p.x * c - p.y * sn, y: p.x * sn + p.y * c };
+  }
+
+  /** Image px → screen (device) px. */
+  private toScreen(p: Vec2): Vec2 {
+    const r = this.rotateVec(p, this.rot);
+    return { x: this.tx + r.x * this.zoom, y: this.ty + r.y * this.zoom };
+  }
+
+  /** Rotation that makes the inter-teardrop line horizontal (0 when off or unknown). */
+  targetRotation(): number {
+    if (!this.levelTeardrops) return 0;
+    const { R, L } = this.store.state.case.landmarks;
+    if (!R.teardrop || !L.teardrop) return 0;
+    const [a, b] = R.teardrop.x < L.teardrop.x ? [R.teardrop, L.teardrop] : [L.teardrop, R.teardrop];
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    return Math.abs(ang) < Math.PI / 6 ? -ang : 0;
+  }
+
+  /** Apply a new rotation while keeping the canvas centre fixed on the same image point. */
+  private syncRotation(): void {
+    const target = this.targetRotation();
+    if (Math.abs(target - this.rot) < 1e-6) return;
+    const c = { x: this.canvas.width / 2, y: this.canvas.height / 2 };
+    const anchor = this.toImage(c);
+    this.rot = target;
+    const r = this.rotateVec(anchor, this.rot);
+    this.tx = c.x - r.x * this.zoom;
+    this.ty = c.y - r.y * this.zoom;
   }
 
   private lastReviewKey = '';
@@ -114,9 +163,11 @@ export class Viewer {
     const fieldPx = target.fieldMm / mmPerPx;
     const w = this.canvas.width;
     const h = this.canvas.height;
+    this.rot = this.targetRotation();
     this.zoom = Math.min(w, h) / fieldPx;
-    this.tx = w / 2 - target.center.x * this.zoom;
-    this.ty = h * 0.42 - target.center.y * this.zoom;
+    const r = this.rotateVec(target.center, this.rot);
+    this.tx = w / 2 - r.x * this.zoom;
+    this.ty = h * 0.42 - r.y * this.zoom;
   }
 
   zoomBy(f: number): void {
@@ -127,8 +178,9 @@ export class Viewer {
   private zoomAt(screen: Vec2, f: number): void {
     const before = this.toImage(screen);
     this.zoom = Math.min(40, Math.max(0.02, this.zoom * f));
-    this.tx = screen.x - before.x * this.zoom;
-    this.ty = screen.y - before.y * this.zoom;
+    const r = this.rotateVec(before, this.rot);
+    this.tx = screen.x - r.x * this.zoom;
+    this.ty = screen.y - r.y * this.zoom;
     this.render();
   }
 
@@ -139,7 +191,7 @@ export class Viewer {
   }
 
   private toImage(p: Vec2): Vec2 {
-    return { x: (p.x - this.tx) / this.zoom, y: (p.y - this.ty) / this.zoom };
+    return this.rotateVec({ x: (p.x - this.tx) / this.zoom, y: (p.y - this.ty) / this.zoom }, -this.rot);
   }
 
   private handles(): Handle[] {
@@ -230,9 +282,8 @@ export class Viewer {
     let best: Handle | null = null;
     let bestD = tol;
     for (const h of this.handles()) {
-      const sx = h.pos.x * this.zoom + this.tx;
-      const sy = h.pos.y * this.zoom + this.ty;
-      const d = Math.hypot(sx - screen.x, sy - screen.y);
+      const sp = this.toScreen(h.pos);
+      const d = Math.hypot(sp.x - screen.x, sp.y - screen.y);
       if (d < bestD) {
         bestD = d;
         best = h;
@@ -401,10 +452,14 @@ export class Viewer {
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     this.ensureBitmap(s);
     if (!this.bitmap) return;
-    ctx.setTransform(this.zoom, 0, 0, this.zoom, this.tx, this.ty);
+    this.syncRotation();
+    const zc = this.zoom * Math.cos(this.rot);
+    const zs = this.zoom * Math.sin(this.rot);
+    ctx.setTransform(zc, zs, -zs, zc, this.tx, this.ty);
     ctx.imageSmoothingEnabled = this.zoom < 2;
     ctx.drawImage(this.bitmap, 0, 0);
     const dpr = window.devicePixelRatio || 1;
+    this.labelLayer.textAngle = -this.rot;
     drawOverlay(ctx, s, dpr / this.zoom, this.layers, this.labelLayer);
     // Rubber-band preview for multi-click tools.
     if (this.hover && s.pendingClicks.length && s.activeTool) {
@@ -436,13 +491,25 @@ export class Viewer {
     const s = this.store.state;
     this.ensureBitmap(s);
     if (!this.bitmap) return null;
+    const rot = this.targetRotation();
+    const bw = this.bitmap.width;
+    const bh = this.bitmap.height;
+    const cos = Math.abs(Math.cos(rot));
+    const sin = Math.abs(Math.sin(rot));
     const c = document.createElement('canvas');
-    c.width = this.bitmap.width;
-    c.height = this.bitmap.height;
+    c.width = Math.round(bw * cos + bh * sin);
+    c.height = Math.round(bw * sin + bh * cos);
     const cx = c.getContext('2d')!;
+    cx.fillStyle = '#000';
+    cx.fillRect(0, 0, c.width, c.height);
+    cx.save();
+    cx.translate(c.width / 2, c.height / 2);
+    cx.rotate(rot);
+    cx.translate(-bw / 2, -bh / 2);
     cx.drawImage(this.bitmap, 0, 0);
     const u = Math.max(1, c.width / 1400);
-    drawOverlay(cx, s, u, this.layers, { offsets: this.labelLayer.offsets, boxes: [] });
+    drawOverlay(cx, s, u, this.layers, { offsets: this.labelLayer.offsets, boxes: [], textAngle: -rot });
+    cx.restore();
     if (this.summaryVisible && s.measurements) drawSummary(cx, s, c.width / 2, 12 * u, u);
     drawLegend(cx, s, c.width, 12 * u, u, COLORS, isOnImageLeft(s.case.operativeSide, s.case.standardOrientation));
     return c;

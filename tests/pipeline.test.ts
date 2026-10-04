@@ -247,8 +247,14 @@ describe('goals and manual placement', () => {
 });
 
 describe('template alignment', () => {
-  it('auto stem is upright to the inter-teardrop line by default', () => {
+  it('auto stem follows the canal by default', () => {
+    const plan = buildPlan(buildCase(), DEFAULT_LIBRARY)!;
+    expect(plan.stem!.chosen.pose.tilt).toBe(0);
+  });
+
+  it('optional upright stem is perpendicular to the inter-teardrop line', () => {
     const c = buildCase();
+    c.options.stemAlignment = 'pelvis';
     const plan = buildPlan(c, DEFAULT_LIBRARY)!;
     const ch = plan.stem!.chosen;
     // Stem axis direction in image mm vs the pelvic vertical.
